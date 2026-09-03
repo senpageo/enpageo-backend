@@ -1,0 +1,17 @@
+services:
+  db:
+    image: postgis/postgis:17-3.4
+    container_name: enpageo-db
+    restart: unless-stopped
+    shm_size: 2gb
+    environment:
+      POSTGRES_USER: enpageo
+      POSTGRES_PASSWORD: enpageo_dev
+      POSTGRES_DB: enpageo
+    ports:
+      - "5434:5432"
+    volumes:
+      - enpageo_db_data:/var/lib/postgresql/data
+
+volumes:
+  enpageo_db_data:
