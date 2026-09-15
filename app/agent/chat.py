@@ -11,33 +11,71 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.42.25:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:30b")
 MAX_TOOL_ROUNDS = 4
 
-SYSTEM_PROMPT = """Du bist ein Assistent für eine interaktive Karte von Berliner Gebäuden (Enpageo).
+SYSTEM_PROMPT = """Du bist ein Assistent für eine interaktive Karte von Berliner Gebäuden und Bäumen (Enpageo).
 Du kannst Gebäude im aktuell sichtbaren Kartenausschnitt nach Kriterien wie Nutzungstyp, Heiz-/Kältebedarf \
 und Baujahr filtern (find_buildings). Die Werte stammen aus dem Szenario 2040 / RCP 4.5 / mittlere Sanierung.
+Du kannst außerdem Straßen- und Anlagenbäume (Berlin Baumbestand) nach Art, Kronendurchmesser, Höhe, \
+Bezirk oder Herkunft (Straße/Anlage) filtern (find_trees).
+Außerdem kannst du Dach-Kühlanlagen (Klimaanlagen-Kondensatoren, Kühltürme — per Luftbildauswertung \
+erkannt) nach Klasse, Erkennungssicherheit oder Grundfläche filtern (find_chillers).
 
 Regeln:
 - Antworte auf Deutsch, knapp und konkret.
 - Nenne in deiner Antwort immer die echten Zahlen aus dem Tool-Ergebnis (Anzahl, Durchschnittswerte) — \
 erfinde niemals Werte.
 - Wenn "truncated" im Tool-Ergebnis true ist, weise darauf hin, dass es noch mehr Treffer gibt, als angezeigt werden.
-- Das Tool durchsucht entweder ein von der Nutzerin gezeichnetes Polygon (falls vorhanden) oder sonst den \
-aktuell sichtbaren Kartenausschnitt — keine benannten Bezirke/Stadtteile; falls danach gefragt wird, \
-erkläre das kurz statt zu raten.
-- Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt find_buildings ohne Filter aufzurufen.
+- Die Tools durchsuchen entweder eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden) oder \
+sonst den aktuell sichtbaren Kartenausschnitt — keine benannten Bezirke/Stadtteile (außer beim Baum-Attribut \
+"Bezirk" selbst); falls danach gefragt wird, erkläre das kurz statt zu raten.
+- Wurde ein Punkt oder eine Linie gezeichnet und die Nutzerin nennt IRGENDEINEN Abstand (z.B. "im Abstand von \
+100m", "im Radius von 10m", "im Umkreis von 50 Metern", "in 1km Entfernung"), MUSST du diesen Wert immer als \
+buffer_distance_m mitgeben — das ist nicht optional. Rechne dabei immer in Meter um (1km = 1000, 0,5km = 500). \
+Bei einem gezeichneten Polygon oder ganz ohne Zeichnung lass buffer_distance_m weg.
+- Gib bei usage_zone_type immer eine der exakten Kategorie-Teilzeichenketten aus der Tool-Beschreibung an, nie \
+eine eigene Umschreibung — im Zweifel wähle die nächstliegende exakte Kategorie statt zu raten.
+- Enthält das Tool-Ergebnis "search_area_m2", nenne die berechnete Fläche in der Antwort (in m², bei großen \
+Flächen gerne gerundet in ha).
+- Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt ein Tool ohne Filter aufzurufen.
+- Rufe pro Antwort nur eines der drei Tools auf, je nachdem ob nach Gebäuden, Bäumen oder Kühlanlagen gefragt wird.
 """
+
+
+def _geometry_context_note(polygon: dict | None) -> str:
+    """A one-line, unambiguous statement of what (if anything) is currently drawn on the map,
+    so the model never has to guess whether a shape exists before deciding on buffer_distance_m."""
+    if not polygon:
+        return "\n\nAktuell ist nichts auf der Karte gezeichnet — die Suche nutzt den sichtbaren Kartenausschnitt."
+    geom_type = polygon.get("type")
+    if geom_type == "Point":
+        return (
+            "\n\nAktuell ist ein PUNKT auf der Karte gezeichnet. Nennt die Nutzerin einen Abstand/Radius, "
+            "MUSST du ihn als buffer_distance_m an das Tool übergeben (in Metern umgerechnet), sonst frage "
+            "kurz danach."
+        )
+    if geom_type == "LineString":
+        return (
+            "\n\nAktuell ist eine LINIE auf der Karte gezeichnet. Nennt die Nutzerin einen Abstand, MUSST du "
+            "ihn als buffer_distance_m an das Tool übergeben (in Metern umgerechnet), sonst frage kurz danach."
+        )
+    if geom_type == "Polygon":
+        return "\n\nAktuell ist eine FLÄCHE (Polygon) auf der Karte gezeichnet — buffer_distance_m ist hier nicht nötig."
+    return ""
 
 
 def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | None) -> dict:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    system_prompt = SYSTEM_PROMPT + _geometry_context_note(polygon)
 
     messages = [{"role": "user", "content": message}]
     geojson_result = None
+    layer_result = None
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            temperature=0,
+            system=system_prompt,
             tools=TOOLS,
             messages=messages,
         )
@@ -49,6 +87,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
             return {
                 "reply": "\n".join(text_blocks).strip(),
                 "geojson": geojson_result,
+                "layer": layer_result,
             }
 
         messages.append({"role": "assistant", "content": response.content})
@@ -58,6 +97,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
             result = execute_tool(tool_use.name, tool_use.input, db, bbox, polygon)
             if "geojson" in result:
                 geojson_result = result["geojson"]
+                layer_result = result.get("layer")
                 result_for_llm = result["summary_for_llm"]
             else:
                 result_for_llm = result
@@ -74,6 +114,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
     return {
         "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
         "geojson": geojson_result,
+        "layer": layer_result,
     }
 
 
@@ -83,21 +124,23 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
     client = OpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
         {"role": "user", "content": message},
     ]
     geojson_result = None
+    layer_result = None
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
             model=OLLAMA_MODEL,
             messages=messages,
             tools=to_openai_tools(),
+            temperature=0,
         )
         msg = response.choices[0].message
 
         if not msg.tool_calls:
-            return {"reply": (msg.content or "").strip(), "geojson": geojson_result}
+            return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result}
 
         messages.append(
             {
@@ -112,6 +155,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
             result = execute_tool(tool_call.function.name, tool_input, db, bbox, polygon)
             if "geojson" in result:
                 geojson_result = result["geojson"]
+                layer_result = result.get("layer")
                 result_for_llm = result["summary_for_llm"]
             else:
                 result_for_llm = result
@@ -126,6 +170,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
     return {
         "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
         "geojson": geojson_result,
+        "layer": layer_result,
     }
 
 

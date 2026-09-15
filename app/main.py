@@ -20,6 +20,9 @@ DEFAULT_CLIMATE_YEAR = 2040
 DEFAULT_CLIMATE_SCENARIO = "RCP_4_5"
 DEFAULT_REFURBISHMENT_VARIANT = "Medium"
 MAX_BUILDINGS_PER_REQUEST = 5000
+MAX_TREES_PER_REQUEST = 8000
+MIN_CROWN_RADIUS_M = 0.5
+MAX_CHILLERS_PER_REQUEST = 5437
 
 load_dotenv()
 
@@ -63,6 +66,40 @@ def list_locations(db: Session = Depends(get_db)):
         )
         for row in rows
     ]
+
+
+# emc.district = the 12 official Berlin Bezirke; emc.city (414 Berlin/Brandenburg
+# municipalities) filtered to "Berlin" gives the single city outline. Both are small,
+# static datasets, so the whole FeatureCollection is returned in one go (no bbox filtering).
+BOUNDARY_QUERIES = {
+    "bezirke": """
+        SELECT dist_id AS id, name, ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
+        FROM emc.district ORDER BY name
+    """,
+    "stadtgrenze": """
+        SELECT id, name, ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
+        FROM emc.city WHERE name = 'Berlin'
+    """,
+}
+
+
+@app.get("/api/boundaries")
+def get_boundaries(type: str = Query(...), db: Session = Depends(get_db)):
+    query = BOUNDARY_QUERIES.get(type)
+    if not query:
+        raise HTTPException(status_code=400, detail=f"unknown boundary type '{type}', expected one of {list(BOUNDARY_QUERIES)}")
+    rows = db.execute(text(query)).all()
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": json.loads(row.geom),
+                "properties": {"id": row.id, "name": row.name},
+            }
+            for row in rows
+        ],
+    }
 
 
 @app.get("/api/buildings")
@@ -118,6 +155,120 @@ def list_buildings(
                     "bldg_uuid": row.bldg_uuid,
                     "cooling_demand": row.cooling_demand,
                     "usage_zone_type": row.usage_zone_type,
+                },
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/api/trees")
+def list_trees(
+    bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat in WGS84"),
+    db: Session = Depends(get_db),
+):
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bbox must be 'min_lon,min_lat,max_lon,max_lat'")
+
+    params = {
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+        "min_radius": MIN_CROWN_RADIUS_M,
+        "limit": MAX_TREES_PER_REQUEST,
+    }
+
+    rows = db.execute(
+        text(
+            """
+            SELECT * FROM (
+                SELECT
+                    gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'strassenbaum' AS herkunft,
+                    ST_AsGeoJSON(ST_Transform(
+                        ST_Buffer(geom, GREATEST(kronedurch / 2, :min_radius)), 4326
+                    )) AS geom
+                FROM core_veg.strassenbaeume
+                WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+                UNION ALL
+                SELECT
+                    gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'anlagenbaum' AS herkunft,
+                    ST_AsGeoJSON(ST_Transform(
+                        ST_Buffer(geom, GREATEST(kronedurch / 2, :min_radius)), 4326
+                    )) AS geom
+                FROM core_veg.anlagenbaeume
+                WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+            ) t
+            LIMIT :limit
+            """
+        ),
+        params,
+    ).all()
+
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": json.loads(row.geom),
+                "properties": {
+                    "gisid": row.gisid,
+                    "art": row.art_dtsch,
+                    "gattung": row.gattung_deutsch,
+                    "kronedurch": row.kronedurch,
+                    "baumhoehe": row.baumhoehe,
+                    "bezirk": row.bezirk,
+                    "herkunft": row.herkunft,
+                },
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/api/chillers")
+def list_chillers(
+    bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat in WGS84"),
+    db: Session = Depends(get_db),
+):
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bbox must be 'min_lon,min_lat,max_lon,max_lat'")
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+                objectid, class AS class_name, confidence, shape_area,
+                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
+            FROM core_building."Chillers"
+            WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+            LIMIT :limit
+            """
+        ),
+        {
+            "min_lon": min_lon,
+            "min_lat": min_lat,
+            "max_lon": max_lon,
+            "max_lat": max_lat,
+            "limit": MAX_CHILLERS_PER_REQUEST,
+        },
+    ).all()
+
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": json.loads(row.geom),
+                "properties": {
+                    "objectid": row.objectid,
+                    "class": row.class_name,
+                    "confidence": row.confidence,
+                    "shape_area": row.shape_area,
                 },
             }
             for row in rows
