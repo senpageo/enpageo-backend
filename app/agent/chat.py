@@ -130,10 +130,12 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
     if OLLAMA_CLIENT_CERT and OLLAMA_CLIENT_KEY:
         # httpx defaults to a 5s timeout when a custom client is supplied (the openai SDK's own
         # generous default only applies to its own internal client) — qwen3:30b routinely takes
-        # well over that, especially with tool-calling round trips.
-        http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=120.0)
+        # well over that, especially a cold model load (~45s alone) plus tool-calling round trips.
+        http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=180.0)
 
-    client = OpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama", http_client=http_client)
+    client = OpenAI(
+        base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama", http_client=http_client, timeout=180.0
+    )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
