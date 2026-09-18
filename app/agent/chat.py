@@ -131,10 +131,17 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
         # httpx defaults to a 5s timeout when a custom client is supplied (the openai SDK's own
         # generous default only applies to its own internal client) — qwen3:30b routinely takes
         # well over that, especially a cold model load (~45s alone) plus tool-calling round trips.
-        http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=180.0)
+        http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=110.0)
 
+    # max_retries=0: the SDK's default retry-on-timeout re-issues the whole request and waits
+    # out the full timeout again each time, so a single slow call can silently balloon to 2-3x
+    # the configured timeout — worse than just failing once and letting the caller retry.
     client = OpenAI(
-        base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama", http_client=http_client, timeout=180.0
+        base_url=f"{OLLAMA_BASE_URL}/v1",
+        api_key="ollama",
+        http_client=http_client,
+        timeout=110.0,
+        max_retries=0,
     )
 
     messages = [
