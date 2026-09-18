@@ -9,6 +9,10 @@ from .tools import TOOLS, execute_tool, to_openai_tools
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.42.25:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:30b")
+# mTLS client cert for reaching Ollama through the ai.coolingmap.de reverse proxy (Alex's server
+# only accepts connections presenting a certificate signed by our own private CA).
+OLLAMA_CLIENT_CERT = os.getenv("OLLAMA_CLIENT_CERT")
+OLLAMA_CLIENT_KEY = os.getenv("OLLAMA_CLIENT_KEY")
 MAX_TOOL_ROUNDS = 4
 
 SYSTEM_PROMPT = """Du bist ein Assistent für eine interaktive Karte von Berliner Gebäuden und Bäumen (Enpageo).
@@ -119,9 +123,17 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
 
 
 def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None) -> dict:
+    import httpx
     from openai import OpenAI
 
-    client = OpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
+    http_client = None
+    if OLLAMA_CLIENT_CERT and OLLAMA_CLIENT_KEY:
+        # httpx defaults to a 5s timeout when a custom client is supplied (the openai SDK's own
+        # generous default only applies to its own internal client) — qwen3:30b routinely takes
+        # well over that, especially with tool-calling round trips.
+        http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=120.0)
+
+    client = OpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama", http_client=http_client)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
