@@ -388,10 +388,15 @@ def lod2(uuid: str, db: Session = Depends(get_db)):
         SELECT ts.objectclass_id AS cls,
                ST_ZMin(sg.geometry) AS zmin, ST_ZMax(sg.geometry) AS zmax,
                -- A wall standing on another building's outline is a party wall: no
-               -- windows, no sun, and the zoning solver has to know. Half a metre of
-               -- tolerance covers the offset between ALKIS and the city model.
-               EXISTS (SELECT 1 FROM emc.building o
-                        WHERE o.uuid <> :u
+               -- windows, no sun, and the zoning solver has to know. The neighbours are
+               -- taken from the city model's own ground surfaces, not from ALKIS: ALKIS
+               -- files one physical block under several keys -- thirteen of them overlap
+               -- this building alone -- so "any other ALKIS outline nearby" marks every
+               -- wall, including the street facade.
+               EXISTS (SELECT 1 FROM zoning.citydb_ground o
+                        WHERE o.citydb_id NOT IN (SELECT citydb_id
+                                                    FROM zoning.building_citydb
+                                                   WHERE bldg_uuid = :u)
                           AND o.geom && ST_Expand(ST_Force2D(sg.geometry), 0.6)
                           AND ST_DWithin(o.geom, ST_Force2D(sg.geometry), 0.5)) AS shared,
                ST_AsGeoJSON(ST_Transform(sg.geometry, 4326), 7) AS geom

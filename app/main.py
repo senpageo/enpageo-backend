@@ -15,11 +15,6 @@ from .models import Location
 from .schemas import LocationOut
 from .zoning_api import router as zoning_router
 
-# Default scenario slice for the building demand map: chosen with the user
-# (2040 / RCP 4.5 / Medium refurbishment) — one row per building in core_bldg.calib_monthly.
-DEFAULT_CLIMATE_YEAR = 2040
-DEFAULT_CLIMATE_SCENARIO = "RCP_4_5"
-DEFAULT_REFURBISHMENT_VARIANT = "Medium"
 MAX_BUILDINGS_PER_REQUEST = 5000
 MAX_TREES_PER_REQUEST = 8000
 MIN_CROWN_RADIUS_M = 0.5
@@ -117,7 +112,13 @@ def list_buildings(
     except ValueError:
         raise HTTPException(status_code=400, detail="bbox must be 'min_lon,min_lat,max_lon,max_lat'")
 
-    month_col = f"cooling_demand_{month:02d}"
+    # core_bldg.calib_monthly (a per-building simulation result, but 36 GB for 221 of 222
+    # climate/refurbishment combinations nothing here ever queried) was dropped. Cooling is now
+    # a generic per-usage-type placeholder from core_bldg.usage_cooling_profile — see that
+    # table's comment. `month` still picks a real column, just pct_MM (0-100) instead of a
+    # simulated kWh figure; the FastAPI Query(..., ge=1, le=12) bound above makes the
+    # f-string safe (only "pct_01".."pct_12" can ever appear here).
+    pct_col = f"pct_{month:02d}"
 
     rows = db.execute(
         text(
@@ -125,22 +126,18 @@ def list_buildings(
             SELECT
                 b.uuid AS bldg_uuid,
                 ST_AsGeoJSON(ST_Transform(b.geom, 4326)) AS geom,
-                cm."{month_col}" AS cooling_demand,
+                COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0)
+                    * COALESCE(ucp.specific_annual_cooling_kwh_m2, 20)
+                    * COALESCE(ucp."{pct_col}", 30) / 100 AS cooling_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type
             FROM emc.building b
-            JOIN core_bldg.calib_monthly cm ON cm.bldg_uuid = b.uuid
             LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
-            WHERE cm."Climate Year" = :climate_year
-              AND cm."Climate Scenario" = :climate_scenario
-              AND cm."Refurbishment Variant" = :refurbishment_variant
-              AND b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+            LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
+            WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
             LIMIT :limit
             """
         ),
         {
-            "climate_year": DEFAULT_CLIMATE_YEAR,
-            "climate_scenario": DEFAULT_CLIMATE_SCENARIO,
-            "refurbishment_variant": DEFAULT_REFURBISHMENT_VARIANT,
             "min_lon": min_lon,
             "min_lat": min_lat,
             "max_lon": max_lon,
