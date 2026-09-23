@@ -13,6 +13,7 @@ from .agent.chat import run_chat
 from .database import get_db
 from .models import Location
 from .schemas import LocationOut
+from .zoning_api import router as zoning_router
 
 # Default scenario slice for the building demand map: chosen with the user
 # (2040 / RCP 4.5 / Medium refurbishment) — one row per building in core_bldg.calib_monthly.
@@ -36,6 +37,9 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+app.include_router(zoning_router)
 
 
 @app.get("/health")

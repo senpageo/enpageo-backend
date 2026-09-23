@@ -95,12 +95,17 @@ def _resolve_usage_zone_type(value: str) -> str:
     return USAGE_ZONE_ALIASES.get(folded.strip().lower(), USAGE_ZONE_ALIASES.get(key, folded))
 
 
-DEFAULT_CLIMATE_YEAR = 2040
-DEFAULT_CLIMATE_SCENARIO = "RCP_4_5"
-DEFAULT_REFURBISHMENT_VARIANT = "Medium"
 MAX_RESULTS = 500
 DEFAULT_RESULTS = 200
 MIN_CROWN_RADIUS_M = 0.5
+
+# July, matching the single fixed month calib_monthly used to report ("cooling_demand_07")
+# before it was dropped — see core_bldg.usage_cooling_profile and _execute_find_buildings.
+COOLING_DEMAND_EXPR = (
+    'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) '
+    "* COALESCE(ucp.specific_annual_cooling_kwh_m2, 20) "
+    "* COALESCE(ucp.pct_07, 30) / 100"
+)
 
 FIND_BUILDINGS_SCHEMA = {
     "type": "object",
@@ -240,8 +245,9 @@ TOOLS = [
         "name": "find_buildings",
         "description": (
             "Find buildings in the search area (a user-drawn polygon/point/line if one exists, "
-            "otherwise the currently visible map area; scenario: year 2040, climate RCP_4_5, medium "
-            "refurbishment) matching filters, and show them on the map. If a point or line was drawn "
+            "otherwise the currently visible map area) matching filters, and show them on the map. "
+            "Heating demand is a real building-specific annual estimate; cooling demand is a "
+            "generic per-usage-type placeholder (not a simulation result). If a point or line was drawn "
             "and the user gave a distance ('im Abstand von 100m', 'im Radius von 10m'), pass it as "
             "buffer_distance_m to search within that distance. Use this whenever the user asks about "
             "specific buildings by usage type, heating/cooling demand, or year built."
@@ -309,12 +315,7 @@ def _execute_find_buildings(
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
     conditions = []
-    params: dict = {
-        "climate_year": DEFAULT_CLIMATE_YEAR,
-        "climate_scenario": DEFAULT_CLIMATE_SCENARIO,
-        "refurbishment_variant": DEFAULT_REFURBISHMENT_VARIANT,
-        "limit": limit,
-    }
+    params: dict = {"limit": limit}
 
     if polygon:
         # A user-drawn polygon/point/line is more precise than the map viewport — use it instead of bbox.
@@ -334,20 +335,16 @@ def _execute_find_buildings(
         conditions.append('pb."PrimaryUsageZoneType" ILIKE :usage_zone_type')
         params["usage_zone_type"] = f"%{_resolve_usage_zone_type(usage_zone_type)}%"
     if min_cooling_demand is not None:
-        conditions.append("cm.cooling_demand_07 >= :min_cooling_demand")
+        conditions.append(f"({COOLING_DEMAND_EXPR}) >= :min_cooling_demand")
         params["min_cooling_demand"] = min_cooling_demand
     if max_cooling_demand is not None:
-        conditions.append("cm.cooling_demand_07 <= :max_cooling_demand")
+        conditions.append(f"({COOLING_DEMAND_EXPR}) <= :max_cooling_demand")
         params["max_cooling_demand"] = max_cooling_demand
     if min_heating_demand is not None:
-        conditions.append(
-            'COALESCE(cm."Calibrated Yearly Heating demand", cm."Yearly Heating demand", 0) >= :min_heating_demand'
-        )
+        conditions.append("COALESCE(el.cons_c2r2, 0) >= :min_heating_demand")
         params["min_heating_demand"] = min_heating_demand
     if max_heating_demand is not None:
-        conditions.append(
-            'COALESCE(cm."Calibrated Yearly Heating demand", cm."Yearly Heating demand", 0) <= :max_heating_demand'
-        )
+        conditions.append("COALESCE(el.cons_c2r2, 0) <= :max_heating_demand")
         params["max_heating_demand"] = max_heating_demand
     if min_year_built is not None:
         conditions.append(
@@ -362,13 +359,18 @@ def _execute_find_buildings(
 
     where_extra = f"AND {' AND '.join(conditions)}" if conditions else ""
 
+    # No per-building simulation result remains for cooling (core_bldg.calib_monthly was
+    # dropped — 36 GB, 221 of 222 climate/refurbishment combinations never queried by this
+    # tool, and its numbers were themselves estimates, not measurements). Heating stays
+    # building-specific via emp.emblive (real per-building annual demand); cooling now comes
+    # from core_bldg.usage_cooling_profile, a small per-usage-type placeholder — see that
+    # table's comment for the reasoning and cooling_demand_07 for why "*_07" (July).
     base_from = """
         FROM emc.building b
-        JOIN core_bldg.calib_monthly cm ON cm.bldg_uuid = b.uuid
         LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
-        WHERE cm."Climate Year" = :climate_year
-          AND cm."Climate Scenario" = :climate_scenario
-          AND cm."Refurbishment Variant" = :refurbishment_variant
+        LEFT JOIN emp.emblive el ON el.uuid = b.uuid
+        LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
+        WHERE 1=1
     """
 
     total = db.execute(text(f"SELECT count(*) AS total {base_from} {where_extra}"), params).one().total
@@ -379,12 +381,12 @@ def _execute_find_buildings(
             SELECT
                 b.uuid AS bldg_uuid,
                 ST_AsGeoJSON(ST_Transform(b.geom, 4326)) AS geom,
-                cm.cooling_demand_07 AS cooling_demand,
-                COALESCE(cm."Calibrated Yearly Heating demand", cm."Yearly Heating demand") AS heating_demand,
+                ({COOLING_DEMAND_EXPR}) AS cooling_demand,
+                el.cons_c2r2 AS heating_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type,
                 pb."Year of construction" AS year_built
             {base_from} {where_extra}
-            ORDER BY cm.cooling_demand_07 DESC NULLS LAST
+            ORDER BY cooling_demand DESC NULLS LAST
             LIMIT :limit
             """
         ),
