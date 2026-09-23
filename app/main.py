@@ -192,10 +192,10 @@ def list_buildings_3d(
     schema's ground-surface-matched bridge -- Berlin-wide, but ~7% less accurate per the
     zoning tool's own finding; fine for a visual map layer, not for measurement.
 
-    Heights come out of CityGML as metres above sea level. Unlike the single-building
-    endpoint (which zeroes each building's own base), this shifts every building by the
-    SAME base (the viewport's lowest point), so relative heights between buildings stay
-    correct -- important once more than one building is on screen at once.
+    Heights come out of CityGML as metres above sea level; each building is shifted by
+    its own lowest point, same as the single-building endpoint -- there's no terrain in
+    the Mapbox custom layer, so every building's own ground has to sit at the flat map's
+    z=0 or it floats.
     """
     try:
         min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
@@ -251,26 +251,35 @@ def list_buildings_3d(
     if not rows:
         return {"origin": None, "buildings": []}
 
-    base = min(float(r.zmin) for r in rows)
+    # Mapbox custom layers draw on a flat plane (no real terrain), so z=0 has to mean
+    # "this building's own ground" for every building, not one shared viewport minimum --
+    # a shared base left buildings on higher ground floating above the flat map, since
+    # their own zmin was above that minimum. Relative elevation between buildings on real
+    # terrain isn't recoverable on a flat map anyway, so per-building is both simpler and
+    # matches what the base extrusion layer already assumes.
+    rows_by_building: dict[str, list] = {}
+    for r in rows:
+        rows_by_building.setdefault(r.bldg_uuid, []).append(r)
 
     by_building: dict[str, list[dict]] = {}
     lon_sum = lat_sum = 0.0
     n = 0
-    for r in rows:
-        g = json.loads(r.geom)
-        _shift_z(g["coordinates"], base)
-        by_building.setdefault(r.bldg_uuid, []).append(
-            {"kind": SURFACE_KIND_3D[r.cls], "rings": g["coordinates"]}
-        )
-        # centroid of the first ring's first point, good enough for a viewport-sized origin
-        pt = g["coordinates"][0][0]
+    for bldg_uuid, brows in rows_by_building.items():
+        base = min(float(r.zmin) for r in brows)
+        surfaces = []
+        for r in brows:
+            g = json.loads(r.geom)
+            _shift_z(g["coordinates"], base)
+            surfaces.append({"kind": SURFACE_KIND_3D[r.cls], "rings": g["coordinates"]})
+        by_building[bldg_uuid] = surfaces
+        # centroid of the first surface's first point, good enough for a viewport-sized origin
+        pt = surfaces[0]["rings"][0][0]
         lon_sum += pt[0]
         lat_sum += pt[1]
         n += 1
 
     return {
         "origin": [lon_sum / n, lat_sum / n],
-        "base_m": round(base, 2),
         "buildings": [
             {"bldg_uuid": uuid, "surfaces": surfaces} for uuid, surfaces in by_building.items()
         ],
