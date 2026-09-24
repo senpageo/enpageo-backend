@@ -170,7 +170,12 @@ def list_buildings(
 # CityGML objectclass_id -> surface kind. Same numbering the zoning tool's endpoint uses
 # (app/zoning_api.py): 33 is the roof and 34 the wall here, not the other way round.
 SURFACE_KIND_3D = {33: "roof", 34: "wall", 35: "ground"}
-MAX_BUILDINGS_3D_PER_REQUEST = 300
+# 800, paired with the frontend's zoom>=17 gate: a Berlin-wide grid sample at that viewport
+# size averaged ~223 buildings per view (max ~1020), so 800 leaves ~0% missing to the cap
+# while staying well under a second end-to-end (measured ~0.9s / ~680KB for a real ~260-
+# building view). 300 was an untested guess that left up to 19% of buildings missing at
+# zoom 17 purely from being cut off, not from any real data gap.
+MAX_BUILDINGS_3D_PER_REQUEST = 800
 
 
 def _shift_z(coords, base: float) -> None:
