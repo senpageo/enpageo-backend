@@ -134,68 +134,77 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
         # well over that, especially a cold model load (~45s alone) plus tool-calling round trips.
         http_client = httpx.Client(cert=(OLLAMA_CLIENT_CERT, OLLAMA_CLIENT_KEY), timeout=170.0)
 
-    # max_retries=0: the SDK's default retry-on-timeout re-issues the whole request and waits
-    # out the full timeout again each time, so a single slow call can silently balloon to 2-3x
-    # the configured timeout — worse than just failing once and letting the caller retry.
-    # 170s (nginx's proxy_read_timeout is 200s): a cold model load alone measured at ~45-48s via
-    # a bare API call, and the full system prompt used here evidently pushes it noticeably higher.
-    client = OpenAI(
-        base_url=f"{OLLAMA_BASE_URL}/v1",
-        api_key="ollama",
-        http_client=http_client,
-        timeout=170.0,
-        max_retries=0,
-    )
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
-        {"role": "user", "content": message},
-    ]
-    geojson_result = None
-    layer_result = None
-
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = client.chat.completions.create(
-            model=OLLAMA_MODEL,
-            messages=messages,
-            tools=to_openai_tools(),
-            temperature=0,
-        )
-        msg = response.choices[0].message
-
-        if not msg.tool_calls:
-            return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result}
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": msg.content,
-                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
-            }
+    try:
+        # max_retries=0: the SDK's default retry-on-timeout re-issues the whole request and waits
+        # out the full timeout again each time, so a single slow call can silently balloon to 2-3x
+        # the configured timeout — worse than just failing once and letting the caller retry.
+        # 170s (nginx's proxy_read_timeout is 200s): a cold model load alone measured at ~45-48s via
+        # a bare API call, and the full system prompt used here evidently pushes it noticeably higher.
+        client = OpenAI(
+            base_url=f"{OLLAMA_BASE_URL}/v1",
+            api_key="ollama",
+            http_client=http_client,
+            timeout=170.0,
+            max_retries=0,
         )
 
-        for tool_call in msg.tool_calls:
-            tool_input = json.loads(tool_call.function.arguments or "{}")
-            result = execute_tool(tool_call.function.name, tool_input, db, bbox, polygon)
-            if "geojson" in result:
-                geojson_result = result["geojson"]
-                layer_result = result.get("layer")
-                result_for_llm = result["summary_for_llm"]
-            else:
-                result_for_llm = result
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
+            {"role": "user", "content": message},
+        ]
+        geojson_result = None
+        layer_result = None
+
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = client.chat.completions.create(
+                model=OLLAMA_MODEL,
+                messages=messages,
+                tools=to_openai_tools(),
+                temperature=0,
+            )
+            msg = response.choices[0].message
+
+            if not msg.tool_calls:
+                return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result}
+
             messages.append(
                 {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result_for_llm),
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
                 }
             )
 
-    return {
-        "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
-        "geojson": geojson_result,
-        "layer": layer_result,
-    }
+            for tool_call in msg.tool_calls:
+                tool_input = json.loads(tool_call.function.arguments or "{}")
+                result = execute_tool(tool_call.function.name, tool_input, db, bbox, polygon)
+                if "geojson" in result:
+                    geojson_result = result["geojson"]
+                    layer_result = result.get("layer")
+                    result_for_llm = result["summary_for_llm"]
+                else:
+                    result_for_llm = result
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result_for_llm),
+                    }
+                )
+
+        return {
+            "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
+            "geojson": geojson_result,
+            "layer": layer_result,
+        }
+    finally:
+        # The OpenAI SDK never closes a caller-supplied http_client, so without this every
+        # chat request leaked its mTLS connection to Alex's server — enough of those piling up
+        # over the process's lifetime silently exhausted his IP filter's connection limit and
+        # made *new* requests hang on connect (not read), long after the leaking request itself
+        # had finished.
+        if http_client is not None:
+            http_client.close()
 
 
 def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None) -> dict:
