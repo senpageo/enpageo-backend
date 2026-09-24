@@ -244,17 +244,32 @@ def list_buildings_3d(
     rows = db.execute(
         text(
             """
-            WITH matched AS (
+            WITH candidates AS (
                 -- relation_bldg_citygml_v2 has ~5.4 candidate 3D matches per building on
-                -- average (a 2D EnergyMap building can overlap several CityGML solids);
-                -- DISTINCT ON keeps only the best one (exact "1:1" match first, else the
-                -- candidate with the largest footprint overlap) so one real building
-                -- doesn't use up several of the LIMIT slots below.
-                SELECT DISTINCT ON (b.uuid) b.uuid AS bldg_uuid, rel.citygml_bldg_id
+                -- average (a 2D EnergyMap building can overlap several CityGML solids).
+                SELECT b.uuid AS bldg_uuid, rel.citygml_bldg_id, rel.match_type
                 FROM emc.building b
                 JOIN emc.relation_bldg_citygml_v2 rel ON rel.bldg_uuid = b.uuid
                 WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
-                ORDER BY b.uuid, (rel.match_type = '1:1') DESC, rel.relative_intersection DESC NULLS LAST
+            ),
+            -- An exact "1:1" candidate is kept alone. But "One-2D:n-3D" means the 2D
+            -- building's real footprint is split into n separate CityGML parts (e.g. wings
+            -- of one address that were LoD2-modelled as several building bodies) -- taking
+            -- only the single best-overlap part, as an earlier version of this query did,
+            -- silently dropped the rest: found via a building whose 4 real parts summed to
+            -- its exact 2D footprint area, but only the 42.7%-overlap part ever rendered.
+            -- So for a building with no "1:1" match, every non-"1:1" candidate is kept and
+            -- their surfaces all get merged under that one bldg_uuid downstream in Python.
+            matched AS (
+                SELECT bldg_uuid, citygml_bldg_id FROM candidates WHERE match_type = '1:1'
+                UNION ALL
+                SELECT c.bldg_uuid, c.citygml_bldg_id
+                FROM candidates c
+                WHERE c.match_type != '1:1'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM candidates c2
+                      WHERE c2.bldg_uuid = c.bldg_uuid AND c2.match_type = '1:1'
+                  )
             ),
             -- LIMIT has to sit here, after confirming real LoD2 surfaces exist -- capping
             -- the raw candidate list instead let empty buildings (no citydb match, or a
