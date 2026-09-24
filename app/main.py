@@ -183,6 +183,32 @@ def _shift_z(coords, base: float) -> None:
         _shift_z(c, base)
 
 
+def _extrude_footprint(geojson_geom: dict, height: float) -> list[dict]:
+    """Build a flat box (ground/roof/walls) from a 2D footprint for buildings with no real
+    LoD2 model -- clearly worse than an actual solid, but better than the building just being
+    absent; the frontend renders these in a muted colour so they aren't mistaken for real
+    geometry (see zoning_api's own "noLod2" fallback for the same idea on a single building)."""
+    polys = geojson_geom["coordinates"]
+    if geojson_geom["type"] == "Polygon":
+        polys = [polys]
+    surfaces = []
+    for poly in polys:
+        ring = poly[0]  # exterior ring only; courtyards/holes aren't worth modelling for a box
+        surfaces.append({"kind": "ground", "rings": [[[p[0], p[1], 0] for p in ring]]})
+        surfaces.append({"kind": "roof", "rings": [[[p[0], p[1], height] for p in ring]]})
+        for i in range(len(ring) - 1):
+            p0, p1 = ring[i], ring[i + 1]
+            wall = [
+                [p0[0], p0[1], 0],
+                [p1[0], p1[1], 0],
+                [p1[0], p1[1], height],
+                [p0[0], p0[1], height],
+                [p0[0], p0[1], 0],
+            ]
+            surfaces.append({"kind": "wall", "rings": [wall]})
+    return surfaces
+
+
 @app.get("/api/buildings3d")
 def list_buildings_3d(
     bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat in WGS84"),
@@ -200,6 +226,10 @@ def list_buildings_3d(
     its own lowest point, same as the single-building endpoint -- there's no terrain in
     the Mapbox custom layer, so every building's own ground has to sit at the flat map's
     z=0 or it floats.
+
+    Only ~2/3 of Berlin's buildings have any citygml match; buildings without one get a
+    plain extruded box from their 2D footprint instead of being silently absent, flagged
+    "estimated": true per building so the frontend can render them distinctly.
     """
     try:
         min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
@@ -252,9 +282,6 @@ def list_buildings_3d(
         },
     ).all()
 
-    if not rows:
-        return {"origin": None, "buildings": []}
-
     # Mapbox custom layers draw on a flat plane (no real terrain), so z=0 has to mean
     # "this building's own ground" for every building, not one shared viewport minimum --
     # a shared base left buildings on higher ground floating above the flat map, since
@@ -265,7 +292,7 @@ def list_buildings_3d(
     for r in rows:
         rows_by_building.setdefault(r.bldg_uuid, []).append(r)
 
-    by_building: dict[str, list[dict]] = {}
+    by_building: dict[str, dict] = {}
     lon_sum = lat_sum = 0.0
     n = 0
     for bldg_uuid, brows in rows_by_building.items():
@@ -275,17 +302,67 @@ def list_buildings_3d(
             g = json.loads(r.geom)
             _shift_z(g["coordinates"], base)
             surfaces.append({"kind": SURFACE_KIND_3D[r.cls], "rings": g["coordinates"]})
-        by_building[bldg_uuid] = surfaces
+        by_building[bldg_uuid] = {"surfaces": surfaces, "estimated": False}
         # centroid of the first surface's first point, good enough for a viewport-sized origin
         pt = surfaces[0]["rings"][0][0]
         lon_sum += pt[0]
         lat_sum += pt[1]
         n += 1
 
+    # Only ~2/3 of Berlin's buildings have a citygml match at all (many more in some
+    # neighbourhoods) -- rather than just leaving those buildings absent from the 3D view,
+    # fill the rest of this request's budget with plain extruded boxes from their 2D
+    # footprint, flagged "estimated" so the frontend can render them distinctly.
+    remaining = MAX_BUILDINGS_3D_PER_REQUEST - len(by_building)
+    if remaining > 0:
+        estimated_rows = db.execute(
+            text(
+                """
+                SELECT b.uuid AS bldg_uuid,
+                       ST_AsGeoJSON(ST_Transform(b.geom, 4326), 7) AS footprint,
+                       GREATEST(3, LEAST(100, COALESCE(
+                           pb."Gross volume" / NULLIF(pb."Footprint area", 0),
+                           pb."Storey number" * COALESCE(pb."Average Storey Height", 3),
+                           9
+                       ))) AS est_height
+                FROM emc.building b
+                LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
+                WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM emc.relation_bldg_citygml_v2 rel
+                      JOIN citydb.thematic_surface ts ON ts.building_id = rel.citygml_bldg_id
+                      WHERE rel.bldg_uuid = b.uuid AND ts.objectclass_id = ANY(:cls)
+                  )
+                LIMIT :limit
+                """
+            ),
+            {
+                "min_lon": min_lon,
+                "min_lat": min_lat,
+                "max_lon": max_lon,
+                "max_lat": max_lat,
+                "cls": list(SURFACE_KIND_3D),
+                "limit": remaining,
+            },
+        ).all()
+
+        for r in estimated_rows:
+            footprint = json.loads(r.footprint)
+            surfaces = _extrude_footprint(footprint, float(r.est_height))
+            by_building[r.bldg_uuid] = {"surfaces": surfaces, "estimated": True}
+            pt = surfaces[0]["rings"][0][0]
+            lon_sum += pt[0]
+            lat_sum += pt[1]
+            n += 1
+
+    if not by_building:
+        return {"origin": None, "buildings": []}
+
     return {
         "origin": [lon_sum / n, lat_sum / n],
         "buildings": [
-            {"bldg_uuid": uuid, "surfaces": surfaces} for uuid, surfaces in by_building.items()
+            {"bldg_uuid": uuid, "surfaces": b["surfaces"], "estimated": b["estimated"]}
+            for uuid, b in by_building.items()
         ],
     }
 
