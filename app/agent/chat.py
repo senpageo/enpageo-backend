@@ -188,7 +188,9 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": json.dumps(result_for_llm),
+                        # default=str: tool results carry Postgres NUMERIC columns (e.g. average
+                        # heating/cooling demand) as Decimal, which json.dumps otherwise rejects.
+                        "content": json.dumps(result_for_llm, default=str),
                     }
                 )
 
