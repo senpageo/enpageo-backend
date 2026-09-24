@@ -247,7 +247,7 @@ def list_buildings_3d(
             WITH candidates AS (
                 -- relation_bldg_citygml_v2 has ~5.4 candidate 3D matches per building on
                 -- average (a 2D EnergyMap building can overlap several CityGML solids).
-                SELECT b.uuid AS bldg_uuid, rel.citygml_bldg_id, rel.match_type
+                SELECT b.uuid AS bldg_uuid, rel.citygml_bldg_id, rel.match_type, rel.relative_intersection
                 FROM emc.building b
                 JOIN emc.relation_bldg_citygml_v2 rel ON rel.bldg_uuid = b.uuid
                 WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
@@ -260,16 +260,30 @@ def list_buildings_3d(
             -- its exact 2D footprint area, but only the 42.7%-overlap part ever rendered.
             -- So for a building with no "1:1" match, every non-"1:1" candidate is kept and
             -- their surfaces all get merged under that one bldg_uuid downstream in Python.
-            matched AS (
-                SELECT bldg_uuid, citygml_bldg_id FROM candidates WHERE match_type = '1:1'
+            matched_raw AS (
+                SELECT bldg_uuid, citygml_bldg_id, relative_intersection FROM candidates WHERE match_type = '1:1'
                 UNION ALL
-                SELECT c.bldg_uuid, c.citygml_bldg_id
+                SELECT c.bldg_uuid, c.citygml_bldg_id, c.relative_intersection
                 FROM candidates c
                 WHERE c.match_type != '1:1'
                   AND NOT EXISTS (
                       SELECT 1 FROM candidates c2
                       WHERE c2.bldg_uuid = c.bldg_uuid AND c2.match_type = '1:1'
                   )
+            ),
+            -- Keeping every part for a "One-2D:n-3D" building (above) means the SAME part
+            -- can end up claimed by two different neighbouring 2D buildings (Berlin-wide,
+            -- ~1991 CityGML parts do) -- give it to whichever one overlaps it best and drop
+            -- it for the other, rather than draw that one part twice at two addresses.
+            matched AS (
+                SELECT bldg_uuid, citygml_bldg_id
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY citygml_bldg_id ORDER BY COALESCE(relative_intersection, 0) DESC
+                    ) AS rn
+                    FROM matched_raw
+                ) ranked
+                WHERE rn = 1
             ),
             -- LIMIT has to sit here, after confirming real LoD2 surfaces exist -- capping
             -- the raw candidate list instead let empty buildings (no citydb match, or a
