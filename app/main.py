@@ -2,6 +2,12 @@ import json
 import os
 
 from dotenv import load_dotenv
+
+# Must run before any local module import: .agent.chat reads OLLAMA_BASE_URL/OLLAMA_CLIENT_CERT/
+# OLLAMA_CLIENT_KEY at import time, so loading .env any later leaves it permanently on the
+# hardcoded fallback values for the process's whole lifetime instead of the real config.
+load_dotenv()
+
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from geoalchemy2.functions import ST_X, ST_Y
@@ -19,8 +25,6 @@ MAX_BUILDINGS_PER_REQUEST = 5000
 MAX_TREES_PER_REQUEST = 8000
 MIN_CROWN_RADIUS_M = 0.5
 MAX_CHILLERS_PER_REQUEST = 5437
-
-load_dotenv()
 
 app = FastAPI(title="Enpageo Map API")
 
