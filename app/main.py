@@ -232,9 +232,12 @@ def list_buildings_3d(
     the Mapbox custom layer, so every building's own ground has to sit at the flat map's
     z=0 or it floats.
 
-    Only ~2/3 of Berlin's buildings have any citygml match; buildings without one get a
-    plain extruded box from their 2D footprint instead of being silently absent, flagged
-    "estimated": true per building so the frontend can render them distinctly.
+    Buildings the bridge table has no candidate for are NOT necessarily missing from
+    citydb -- a spot-check found 687 of 691 such buildings (99.4%) actually have real
+    citydb geometry overlapping their footprint; the bridge table itself is just
+    incomplete. So before falling back to an extruded box, a second query spatially
+    matches those buildings directly against citydb ground surfaces (below, "unmatched"/
+    "overlap_candidates"/etc). Only what's still unmatched after THAT gets a box.
     """
     try:
         min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
@@ -343,10 +346,100 @@ def list_buildings_3d(
         lat_sum += pt[1]
         n += 1
 
-    # Only ~2/3 of Berlin's buildings have a citygml match at all (many more in some
-    # neighbourhoods) -- rather than just leaving those buildings absent from the 3D view,
-    # fill the rest of this request's budget with plain extruded boxes from their 2D
-    # footprint, flagged "estimated" so the frontend can render them distinctly.
+    # The bridge table is incomplete (see docstring), so buildings it has no candidate
+    # for get a second chance: spatially match them directly against citydb ground
+    # surfaces before assuming there's really no geometry for them.
+    remaining = MAX_BUILDINGS_3D_PER_REQUEST - len(by_building)
+    if remaining > 0:
+        spatial_rows = db.execute(
+            text(
+                """
+                WITH unmatched AS (
+                    SELECT b.uuid, b.geom
+                    FROM emc.building b
+                    WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+                      AND NOT (b.uuid = ANY(:already_found))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM emc.relation_bldg_citygml_v2 rel
+                          JOIN citydb.thematic_surface ts ON ts.building_id = rel.citygml_bldg_id
+                          WHERE rel.bldg_uuid = b.uuid AND ts.objectclass_id = ANY(:cls)
+                      )
+                ),
+                -- Ground surfaces are the most reliable footprint proxy for scoring overlap
+                -- (walls project to near-zero-area lines in 2D; roofs can overhang past the
+                -- footprint). && before ST_Intersects lets the geometry's GIST index narrow
+                -- candidates before the exact overlap area gets computed.
+                -- Not "overlaps" -- that's a reserved SQL keyword (the temporal predicate
+                -- "x OVERLAPS y") and breaks the parser when used unquoted as a CTE name.
+                overlap_candidates AS (
+                    SELECT u.uuid AS bldg_uuid, ts.building_id AS citygml_bldg_id,
+                           ST_Area(ST_Intersection(ST_Force2D(sg.geometry), u.geom))
+                               / GREATEST(ST_Area(u.geom), 1) AS overlap_frac
+                    FROM unmatched u
+                    JOIN citydb.surface_geometry sg ON sg.geometry && u.geom
+                    JOIN citydb.thematic_surface ts ON ts.lod2_multi_surface_id = sg.root_id AND ts.objectclass_id = 35
+                    WHERE ST_Intersects(ST_Force2D(sg.geometry), u.geom)
+                ),
+                -- best match per 2D building, then (as with the bridge table above) resolved
+                -- the other way too so two neighbours can't both claim the same citygml body
+                best_per_building AS (
+                    SELECT bldg_uuid, citygml_bldg_id, overlap_frac
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY bldg_uuid ORDER BY overlap_frac DESC) AS rn
+                        FROM overlap_candidates
+                    ) r
+                    WHERE rn = 1 AND overlap_frac >= 0.15
+                ),
+                dedup AS (
+                    SELECT bldg_uuid, citygml_bldg_id
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (PARTITION BY citygml_bldg_id ORDER BY overlap_frac DESC) AS rn
+                        FROM best_per_building
+                    ) r
+                    WHERE rn = 1
+                ),
+                capped AS (
+                    SELECT bldg_uuid, citygml_bldg_id FROM dedup LIMIT :limit
+                )
+                SELECT c.bldg_uuid, ts.objectclass_id AS cls,
+                       ST_ZMin(sg.geometry) AS zmin,
+                       ST_AsGeoJSON(ST_Transform(sg.geometry, 4326), 7) AS geom
+                FROM capped c
+                JOIN citydb.thematic_surface ts ON ts.building_id = c.citygml_bldg_id
+                JOIN citydb.surface_geometry sg ON sg.root_id = ts.lod2_multi_surface_id
+                WHERE ts.objectclass_id = ANY(:cls) AND sg.geometry IS NOT NULL
+                """
+            ),
+            {
+                "min_lon": min_lon,
+                "min_lat": min_lat,
+                "max_lon": max_lon,
+                "max_lat": max_lat,
+                "cls": list(SURFACE_KIND_3D),
+                "already_found": list(by_building.keys()),
+                "limit": remaining,
+            },
+        ).all()
+
+        spatial_rows_by_building: dict[str, list] = {}
+        for r in spatial_rows:
+            spatial_rows_by_building.setdefault(r.bldg_uuid, []).append(r)
+        for bldg_uuid, brows in spatial_rows_by_building.items():
+            base = min(float(r.zmin) for r in brows)
+            surfaces = []
+            for r in brows:
+                g = json.loads(r.geom)
+                _shift_z(g["coordinates"], base)
+                surfaces.append({"kind": SURFACE_KIND_3D[r.cls], "rings": g["coordinates"]})
+            by_building[bldg_uuid] = {"surfaces": surfaces, "estimated": False}
+            pt = surfaces[0]["rings"][0][0]
+            lon_sum += pt[0]
+            lat_sum += pt[1]
+            n += 1
+
+    # Whatever's left has neither a bridge-table nor a spatial match -- fill the rest of
+    # this request's budget with plain extruded boxes from their 2D footprint instead of
+    # leaving them absent, flagged "estimated" so the frontend can render them distinctly.
     remaining = MAX_BUILDINGS_3D_PER_REQUEST - len(by_building)
     if remaining > 0:
         estimated_rows = db.execute(
@@ -362,6 +455,7 @@ def list_buildings_3d(
                 FROM emc.building b
                 LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
                 WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+                  AND NOT (b.uuid = ANY(:already_found))
                   AND NOT EXISTS (
                       SELECT 1 FROM emc.relation_bldg_citygml_v2 rel
                       JOIN citydb.thematic_surface ts ON ts.building_id = rel.citygml_bldg_id
@@ -376,6 +470,7 @@ def list_buildings_3d(
                 "max_lon": max_lon,
                 "max_lat": max_lat,
                 "cls": list(SURFACE_KIND_3D),
+                "already_found": list(by_building.keys()),
                 "limit": remaining,
             },
         ).all()
