@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -103,6 +104,75 @@ def get_boundaries(type: str = Query(...), db: Session = Depends(get_db)):
             for row in rows
         ],
     }
+
+
+MAX_ADDRESS_RESULTS = 8
+_ADDRESS_RE = re.compile(r"^\s*(.*?)[\s,]*(\d+\s*[a-zA-Z]?)?\s*$")
+
+
+def _normalize_street(s: str) -> str:
+    """'Leinestr.' / 'Leinestrasse' / 'leinestraße' -> pattern that matches the dataset's 'Leinestraße'."""
+    s = s.strip().lower()
+    s = re.sub(r"str\.?$", "straße", s)
+    return s.replace("strasse", "straße")
+
+
+@app.get("/api/address")
+def search_address(q: str = Query(..., min_length=2), db: Session = Depends(get_db)):
+    """Berlin address search over the building dataset itself (emp.emblive street + house number).
+
+    Free, needs no external geocoder, and returns the building uuid along with the position, so the map can
+    highlight the building directly. Places that aren't building addresses (squares, parks, other cities) are
+    left to the frontend's fallback geocoder."""
+    m = _ADDRESS_RE.match(q)
+    street = _normalize_street(m.group(1) if m else q)
+    number = (m.group(2) or "").replace(" ", "") if m else ""
+    if len(street) < 2:
+        return []
+    # street_name usually holds the full address ("Leinestraße 55"), corner buildings several of them
+    # separated by "; " ("Leinestraße 9; Weisestraße 32"); house_number is often empty. So the number is
+    # matched inside street_name, right after the street, and not followed by another digit ("9" ≠ "90").
+    rows = db.execute(
+        text(
+            """
+            -- MATERIALIZED: filter the ~500k addresses first (~0.1 s), only then touch geometries
+            WITH hits AS MATERIALIZED (
+                SELECT DISTINCT ON (e.street_name) e.uuid, e.street_name, e.postcode,
+                       lower(e.street_name) ~ :exact_rx AS exact
+                FROM emp.emblive e
+                WHERE lower(e.street_name) LIKE :street_like
+                  AND lower(e.street_name) ~ :match_rx
+                ORDER BY e.street_name, e.uuid
+                LIMIT 200
+            )
+            SELECT h.*,
+                   ST_X(ST_Transform(ST_PointOnSurface(b.geom), 4326)) AS lon,
+                   ST_Y(ST_Transform(ST_PointOnSurface(b.geom), 4326)) AS lat
+            FROM hits h JOIN emc.building b ON b.uuid = h.uuid
+            """
+        ),
+        # regexes assembled here, not in SQL: concatenated from bind parameters, Postgres rebuilt the
+        # pattern for every one of the ~500k rows (2.2 s instead of 0.15 s)
+        {
+            "street_like": f"%{street}%",
+            "match_rx": rf"(^|;\s*){re.escape(street)}" + (rf"\s*{re.escape(number.lower())}([^0-9a-z]|$)" if number else ""),
+            "exact_rx": rf"(^|;\s*){re.escape(street)}" + (rf"\s*{re.escape(number.lower())}" if number else "") + "($|;)",
+        },
+    ).all()
+    # exact address first, then streets/addresses in natural number order
+    def sort_key(r):
+        nums = re.findall(r"\d+", r.street_name)
+        return (not r.exact, re.sub(r"\s*\d.*$", "", r.street_name), int(nums[0]) if nums else -1, r.street_name)
+
+    return [
+        {
+            "uuid": r.uuid,
+            "label": r.street_name + (f", {r.postcode} Berlin" if r.postcode else ", Berlin"),
+            "lon": r.lon,
+            "lat": r.lat,
+        }
+        for r in sorted(rows, key=sort_key)[:MAX_ADDRESS_RESULTS]
+    ]
 
 
 @app.get("/api/buildings")
