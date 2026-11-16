@@ -91,7 +91,8 @@ COPY (
     FROM unbridged u
     JOIN citydb.surface_geometry sg ON sg.geometry && u.geom
     JOIN citydb.thematic_surface ts ON ts.lod2_multi_surface_id = sg.root_id AND ts.objectclass_id = 35
-    WHERE ST_Intersects(ST_Force2D(sg.geometry), u.geom)
+    -- MakeValid: a few LoD2 floor surfaces are invalid (Berlin cell 384_5815: GEOS TopologyException)
+    WHERE ST_Intersects(ST_MakeValid(ST_Force2D(sg.geometry)), u.geom)
     GROUP BY u.uuid, ts.building_id
     HAVING SUM(ST_Area(ST_Intersection(ST_MakeValid(ST_Force2D(sg.geometry)), u.geom))) > 0.5
 ) TO STDOUT WITH (FORMAT csv, HEADER);
@@ -122,7 +123,7 @@ COPY (
         SELECT ts.building_id FROM unbridged u
         JOIN citydb.surface_geometry sg ON sg.geometry && u.geom
         JOIN citydb.thematic_surface ts ON ts.lod2_multi_surface_id = sg.root_id AND ts.objectclass_id = 35
-        WHERE ST_Intersects(ST_Force2D(sg.geometry), u.geom)
+        WHERE ST_Intersects(ST_MakeValid(ST_Force2D(sg.geometry)), u.geom)  -- same filter as OVERLAP
     )
     -- nur Dach (33) und Wand (34); Böden sieht man von oben nie
     SELECT ts.building_id AS body, ts.objectclass_id AS cls, ST_AsGeoJSON(sg.geometry, 2) AS geom

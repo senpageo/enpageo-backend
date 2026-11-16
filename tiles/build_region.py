@@ -7,13 +7,14 @@ Schritt 1, global: Zuordnung LoD2-Körper -> 2D-Gebäude über alle Zellen (nur 
   spatial    kein Körper aus der Tabelle: bester noch freier Körper mit >= 15 % Überlappung des Grundrisses
   covered    Grundriss zu >= 50 % unter bereits vergebenen Körpern (Seitenflügel/Anbau im Körper des
              Nachbarn): keine eigene Geometrie, Verweis cb auf den Besitzer des Körpers
-  estimated  nichts davon: extrudierter Grundriss mit geschätzter Höhe
+  estimated  nichts davon: keine Geometrie (nur Attribute), seit 16.11.2026
 Schritt 2, je Zelle parallel: Geometrie bauen. Der Körper eines Gebäudes stammt immer aus den Kandidaten
   dieses Gebäudes und steht deshalb in derselben Zelldatei.
 
 Kachelbaum (Ersatz statt Ergänzung):
   Wurzel -> Übersicht 4 km (vereinfachte Grundrisse >= 100 m²) -> grob 1 km (Grundrisse >= 40 m², vereinfacht)
-         -> fein 250 m (LoD2, Boxen für estimated)
+         -> fein 250 m (LoD2)
+Die Wurzel hat einen großen Fehlerwert, damit die Übersicht schon in der Stadtansicht nachlädt (keine Blockstufe).
 Attribute je 1-km-Zelle in attrs/<i>_<j>.json, für die Übersicht verschlankt (nur Stufe + Heizwert) in
 attrs/overview_<oi>_<oj>.json; im tileset.json je Kachel unter extras.attrs verlinkt.
 """
@@ -37,7 +38,7 @@ FINE = 250.0
 OVERVIEW_CELLS = 4  # Übersichtskachel = 4 x 4 Zellen
 OVERVIEW_MIN_AREA = 100.0  # m²
 COARSE_MIN_AREA = 40.0  # m²; Schuppen/Garagen erst in der feinen Stufe
-GEOMETRIC_ERROR = {"root": 400.0, "overview": 48.0, "coarse": 16.0, "fine": 0.0}
+GEOMETRIC_ERROR = {"root": 4000.0, "overview": 48.0, "coarse": 16.0, "fine": 0.0}
 SPATIAL_MIN, COVERED_MIN = 0.15, 0.5
 
 csv.field_size_limit(2**31 - 1)
@@ -164,12 +165,13 @@ def build_cell(args):
                 height = max(3.0, max(zs) - base)
             else:
                 t = "estimated"
-        if t == "estimated":
-            fine[(fi, fj)].add_building(uuid, t, extrude(fp, est), 0.0)
-        if float(b["area"]) >= COARSE_MIN_AREA:
-            coarse.add_building(uuid, t, extrude(json.loads(b["footprint_simple"]), height), 0.0)
-        if float(b["area"]) >= OVERVIEW_MIN_AREA:
-            overview_items.append((uuid, t, b["footprint_overview"], height))
+        # Gebäude ohne LoD2-Körper bekommen keine Geometrie mehr (geschätzte Höhe stimmte zu oft nicht,
+        # Entscheidung 16.11.2026); ihre Attribute bleiben für Suche, Chat und Statistik erhalten.
+        if t != "estimated":
+            if float(b["area"]) >= COARSE_MIN_AREA:
+                coarse.add_building(uuid, t, extrude(json.loads(b["footprint_simple"]), height), 0.0)
+            if float(b["area"]) >= OVERVIEW_MIN_AREA:
+                overview_items.append((uuid, t, b["footprint_overview"], height))
 
         def num(k):
             try:

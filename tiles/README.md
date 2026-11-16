@@ -9,6 +9,14 @@ python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python build_region.py data/neukoelln out/neukoelln              # CSV -> Tileset
 ```
 
+Für ganz Berlin (Stand 16.11.2026: Export 7 min mit `--jobs 6` gegen die lokale DB, Bau 9 min, 1,3 GB):
+
+```bash
+export PSQL_CMD="docker exec -i enpageo-db psql -U enpageo -d enpageo"   # lokale DB statt VPS
+.venv/Scripts/python export_region.py --region "*" --out data/berlin --jobs 6
+.venv/Scripts/python build_region.py data/berlin out/berlin --jobs 10
+```
+
 `--region "*"` exportiert ganz Berlin. Unter Git Bash `PYTHONIOENCODING=utf-8` setzen (Umlaute in der Ausgabe).
 Der Export ist wiederaufnehmbar; jede Zelldatei endet mit der Prüfmarke `#END`.
 

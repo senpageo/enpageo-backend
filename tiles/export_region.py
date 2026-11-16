@@ -109,6 +109,7 @@ def main():
             logf.flush()
             print(f"[{n}/{len(cells)}] {i}_{j} {status} {secs:.1f}s {size / 1e6:.1f} MB", flush=True)
     print(f"fertig in {time.time() - t0:.0f} s, {failed} Zellen fehlgeschlagen", flush=True)
+
     sys.exit(1 if failed else 0)
 
 
