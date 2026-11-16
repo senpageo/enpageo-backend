@@ -14,7 +14,8 @@ View spec (what the frontend renders):
   hierarchy  grouping fields outer -> inner for sunburst
   value      value field for sunburst
   title      short heading
-  chooser    which variant decided ("rule", later "llm_no_tools", "llm_tools")
+  chooser    which variant decided ("rule"; "map_table" = fixed comparison condition, always map + table;
+             later "llm_no_tools", "llm_tools")
   rationale  one sentence why, logged for the evaluation
 """
 from .frames import shape
@@ -75,8 +76,27 @@ def choose_rule(fr: dict) -> dict:
             "rationale": "Vergleich weniger Gruppen -> Balkendiagramm"}
 
 
-CHOOSERS = {"rule": choose_rule}
+def choose_map_table(fr: dict) -> dict:
+    """Fixed comparison condition of the benchmark: always map + table, whatever the question (the classic
+    cadastre answer). Objects with a location are shown on the map with the table beside it; results without
+    geometry (aggregates over districts, usage types ...) can only be a table."""
+    s = shape(fr)
+    view = {"chooser": "map_table"}
+    if s["kind"] == "none":
+        return {**view, "type": "text", "companions": [], "title": "Daten fehlen noch", "rationale": "benötigte Daten fehlen"}
+    if s["total"] == 0 or not fr["rows"]:
+        return {**view, "type": "text", "companions": [], "title": "Keine Treffer", "rationale": "leeres Ergebnis"}
+    title = f"{s['total']} Treffer" if s["kind"] == "features" else "Ergebnis"
+    if s["has_geometry"]:
+        return {**view, "type": "map", "companions": ["table"], "title": title, "rationale": "fester Modus: Karte + Tabelle"}
+    return {**view, "type": "table", "companions": [], "title": title,
+            "rationale": "fester Modus: Karte + Tabelle, ohne Lage nur Tabelle"}
 
 
-def choose(fr: dict, chooser: str = "rule") -> dict:
+CHOOSERS = {"rule": choose_rule, "map_table": choose_map_table}
+
+
+def choose(fr: dict | None, chooser: str = "rule") -> dict | None:
+    if not fr:
+        return None
     return CHOOSERS.get(chooser, choose_rule)(fr)

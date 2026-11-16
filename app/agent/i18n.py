@@ -198,6 +198,9 @@ VIEW_EXACT = {
     "ein einzelner Wert -> Kennzahl": "a single value -> key figure",
     "viele Gruppen -> Tabelle": "many groups -> table",
     "Vergleich weniger Gruppen -> Balkendiagramm": "comparison of a few groups -> bar chart",
+    "fester Modus: Karte + Tabelle": "fixed mode: map + table",
+    "fester Modus: Karte + Tabelle, ohne Lage nur Tabelle": "fixed mode: map + table, table only without location",
+    "Ergebnis": "Result",
 }
 
 

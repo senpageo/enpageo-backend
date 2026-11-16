@@ -16,9 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from .agent.chat import run_chat
+from .agent.chat import allowed_models, run_chat
 from .agent.i18n import localize, localize_view
-from .agent.presentation import choose
+from .agent.presentation import CHOOSERS, choose
 from .agent.tools import execute_tool
 from .database import get_db
 from .models import Location
@@ -718,6 +718,8 @@ class ChatRequest(BaseModel):
     polygon: dict | None = None
     history: list[dict] | None = None
     lang: str = "de"  # page language; answers and labels in English for "en"
+    chooser: str = "rule"  # presentation.CHOOSERS: "rule", or "map_table" (fixed comparison condition)
+    model: str | None = None  # benchmark: one of allowed_models(); None = default model
 
 
 @app.post("/api/chat")
@@ -725,8 +727,19 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     provider = os.getenv("CHAT_PROVIDER", "ollama").lower()
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not configured on the server")
-    return run_chat(db, req.message, req.bbox, req.polygon, req.history, req.lang)
+    if req.chooser not in CHOOSERS:
+        raise HTTPException(status_code=400, detail=f"unknown chooser, one of {sorted(CHOOSERS)}")
+    if req.model and req.model not in allowed_models():
+        raise HTTPException(status_code=400, detail=f"model not allowed, one of {allowed_models()}")
+    return run_chat(db, req.message, req.bbox, req.polygon, req.history, req.lang, req.chooser, req.model)
 
+
+
+@app.get("/api/chat/options")
+def chat_options():
+    """What /api/chat accepts for the benchmark: allowed models (default first) and presentation choosers."""
+    return {"models": allowed_models(), "default_model": os.getenv("OLLAMA_MODEL", "qwen3:30b"),
+            "choosers": sorted(CHOOSERS), "provider": os.getenv("CHAT_PROVIDER", "ollama").lower()}
 
 class AnswerRequest(BaseModel):
     tool: str
