@@ -65,12 +65,14 @@ den wichtigsten Zahlen; nenne beim Kältebedarf, dass es ein grober Platzhalter-
 """
 
 
-def _for_llm(result: dict) -> dict:
+def _for_llm(result: dict, lang: str = "de") -> dict:
     """What the model sees of a tool result: the compact summary of find_* tools, or a result frame cut to
     MAX_ROWS_FOR_LLM rows (enough to describe it, without flooding the context)."""
     if "summary_for_llm" in result:
         return result["summary_for_llm"]
     if "kind" in result:
+        # on the English page the model must see English category values and notes, or it quotes them in German
+        result = localize(result, lang)
         return {
             "kind": result["kind"],
             "fields": [f["name"] for f in result["fields"]],
@@ -175,7 +177,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
                 geojson_result = result["geojson"]
                 layer_result = result.get("layer")
             frame_result = result.get("frame") or (result if "kind" in result else frame_result)
-            result_for_llm = _for_llm(result)
+            result_for_llm = _for_llm(result, lang)
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -257,7 +259,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
                     geojson_result = result["geojson"]
                     layer_result = result.get("layer")
                 frame_result = result.get("frame") or (result if "kind" in result else frame_result)
-                result_for_llm = _for_llm(result)
+                result_for_llm = _for_llm(result, lang)
                 messages.append(
                     {
                         "role": "tool",
