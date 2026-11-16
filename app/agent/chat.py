@@ -5,6 +5,7 @@ import anthropic
 from sqlalchemy.orm import Session
 
 from . import analysis
+from .i18n import localize, localize_view
 from .presentation import choose
 from .tools import TOOLS, execute_tool, to_openai_tools
 
@@ -81,11 +82,23 @@ def _for_llm(result: dict) -> dict:
     return result
 
 
-def _presentation(frame_result: dict | None) -> dict:
+
+def _system_prompt(lang: str) -> str:
+    """The prompt stays German (the tools and category names are German); only the answer language changes."""
+    if (lang or "de").lower().startswith("de"):
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT.replace(
+        "- Antworte auf Deutsch, knapp und konkret.",
+        "- Antworte auf Englisch (die Nutzerin ist auf der englischen Seite), knapp und konkret. Bezirks- und "
+        "Straßennamen bleiben unverändert. Tool-Parameter (z. B. Nutzungsarten) gibst du weiterhin auf Deutsch an.")
+
+
+def _presentation(frame_result: dict | None, lang: str = "de") -> dict:
     """Result frame plus the chosen view for the frontend (rule-based chooser for now)."""
     if not frame_result:
         return {}
-    return {"frame": frame_result, "view": choose(frame_result)}
+    # the view is chosen on the German frame (labels don't matter to it), then the frame is translated
+    return {"frame": localize(frame_result, lang), "view": localize_view(choose(frame_result), lang)}
 
 
 def _geometry_context_note(polygon: dict | None) -> str:
@@ -122,9 +135,10 @@ def _history_messages(history: list[dict] | None) -> list[dict]:
     ]
 
 
-def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None) -> dict:
+def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None,
+                        lang: str = "de") -> dict:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    system_prompt = SYSTEM_PROMPT + _geometry_context_note(polygon)
+    system_prompt = _system_prompt(lang) + _geometry_context_note(polygon)
 
     messages = [*_history_messages(history), {"role": "user", "content": message}]
     geojson_result = None
@@ -149,7 +163,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
                 "reply": "\n".join(text_blocks).strip(),
                 "geojson": geojson_result,
                 "layer": layer_result,
-                **_presentation(frame_result),
+                **_presentation(frame_result, lang),
             }
 
         messages.append({"role": "assistant", "content": response.content})
@@ -176,11 +190,12 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
         "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
         "geojson": geojson_result,
         "layer": layer_result,
-        **_presentation(frame_result),
+        **_presentation(frame_result, lang),
     }
 
 
-def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None) -> dict:
+def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None,
+                     lang: str = "de") -> dict:
     import httpx
     from openai import OpenAI
 
@@ -206,7 +221,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
         )
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
+            {"role": "system", "content": _system_prompt(lang) + _geometry_context_note(polygon)},
             *_history_messages(history),
             {"role": "user", "content": message},
         ]
@@ -225,7 +240,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
 
             if not msg.tool_calls:
                 return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result,
-                        **_presentation(frame_result)}
+                        **_presentation(frame_result, lang)}
 
             messages.append(
                 {
@@ -257,7 +272,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
             "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
             "geojson": geojson_result,
             "layer": layer_result,
-            **_presentation(frame_result),
+            **_presentation(frame_result, lang),
         }
     finally:
         # The OpenAI SDK never closes a caller-supplied http_client, so without this every
@@ -269,8 +284,9 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
             http_client.close()
 
 
-def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None, history: list[dict] | None = None) -> dict:
+def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None, history: list[dict] | None = None,
+             lang: str = "de") -> dict:
     provider = os.getenv("CHAT_PROVIDER", "ollama").lower()
     if provider == "anthropic":
-        return _run_chat_anthropic(db, message, bbox, polygon, history)
-    return _run_chat_ollama(db, message, bbox, polygon, history)
+        return _run_chat_anthropic(db, message, bbox, polygon, history, lang)
+    return _run_chat_ollama(db, message, bbox, polygon, history, lang)

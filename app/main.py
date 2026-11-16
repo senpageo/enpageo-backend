@@ -17,6 +17,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .agent.chat import run_chat
+from .agent.i18n import localize, localize_view
 from .agent.presentation import choose
 from .agent.tools import execute_tool
 from .database import get_db
@@ -119,6 +120,25 @@ def _normalize_street(s: str) -> str:
     return s.replace("strasse", "straße")
 
 
+_HOUSE_NUMBERS_RE = re.compile(r"^(.*?)\s+(\d+[A-Za-z]?(?:[-/]\d*[A-Za-z]?)?(?:[\s,]+\d+[A-Za-z]?(?:[-/]\d*[A-Za-z]?)?)*)$")
+
+
+def clean_address(raw: str | None) -> str:
+    """street_name often already carries the number, sometimes twice ("Oderstraße 14, 14, 15, 15"): keep
+    each number once per street; corner buildings stay separated by "; ". Same rule as cleanAddress() in
+    the website's cesiumMap.ts."""
+    parts = []
+    for part in (raw or "").split(";"):
+        part = part.strip()
+        m = _HOUSE_NUMBERS_RE.match(part)
+        if m:
+            nums = list(dict.fromkeys(n for n in re.split(r"[\s,]+", m.group(2)) if n))
+            part = f"{m.group(1)} {', '.join(nums)}"
+        if part:
+            parts.append(part)
+    return "; ".join(parts)
+
+
 @app.get("/api/address")
 def search_address(q: str = Query(..., min_length=2), db: Session = Depends(get_db)):
     """Berlin address search over the building dataset itself (emp.emblive street + house number).
@@ -169,7 +189,7 @@ def search_address(q: str = Query(..., min_length=2), db: Session = Depends(get_
     return [
         {
             "uuid": r.uuid,
-            "label": r.street_name + (f", {r.postcode} Berlin" if r.postcode else ", Berlin"),
+            "label": clean_address(r.street_name) + (f", {r.postcode} Berlin" if r.postcode else ", Berlin"),
             "lon": r.lon,
             "lat": r.lat,
         }
@@ -697,6 +717,7 @@ class ChatRequest(BaseModel):
     bbox: str
     polygon: dict | None = None
     history: list[dict] | None = None
+    lang: str = "de"  # page language; answers and labels in English for "en"
 
 
 @app.post("/api/chat")
@@ -704,7 +725,7 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     provider = os.getenv("CHAT_PROVIDER", "ollama").lower()
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not configured on the server")
-    return run_chat(db, req.message, req.bbox, req.polygon, req.history)
+    return run_chat(db, req.message, req.bbox, req.polygon, req.history, req.lang)
 
 
 class AnswerRequest(BaseModel):
@@ -713,6 +734,7 @@ class AnswerRequest(BaseModel):
     bbox: str = "13.0,52.3,13.8,52.7"
     polygon: dict | None = None
     chooser: str = "rule"
+    lang: str = "de"
 
 
 @app.post("/api/answer")
@@ -726,8 +748,8 @@ def answer(req: AnswerRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=result["error"])
     fr = result.get("frame") or result
     return {
-        "frame": fr,
-        "view": choose(fr, req.chooser),
+        "frame": localize(fr, req.lang),
+        "view": localize_view(choose(fr, req.chooser), req.lang),
         "geojson": result.get("geojson"),
         "layer": result.get("layer"),
     }

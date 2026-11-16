@@ -23,6 +23,7 @@ import csv
 import io
 import json
 import math
+import re
 import sys
 import time
 from collections import Counter, defaultdict
@@ -61,6 +62,25 @@ def sections(text):
 
 def rows(part):
     return list(csv.DictReader(io.StringIO(part))) if part and part.strip() else []
+
+
+_HOUSE_NUMBERS_RE = re.compile(r"^(.*?)\s+(\d+[A-Za-z]?(?:[-/]\d*[A-Za-z]?)?(?:[\s,]+\d+[A-Za-z]?(?:[-/]\d*[A-Za-z]?)?)*)$")
+
+
+def clean_address(raw: str | None) -> str:
+    """street_name often already carries the number, sometimes twice ("Oderstraße 14, 14, 15, 15"): keep
+    each number once per street; corner buildings stay separated by "; ". Same rule as cleanAddress() in
+    the website's cesiumMap.ts and backend app/main.py."""
+    parts = []
+    for part in (raw or "").split(";"):
+        part = part.strip()
+        m = _HOUSE_NUMBERS_RE.match(part)
+        if m:
+            nums = list(dict.fromkeys(n for n in re.split(r"[\s,]+", m.group(2)) if n))
+            part = f"{m.group(1)} {', '.join(nums)}"
+        if part:
+            parts.append(part)
+    return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------------------------- Schritt 1
@@ -179,7 +199,9 @@ def build_cell(args):
             except (TypeError, ValueError):
                 return None
 
-        addr = " ".join(x for x in [b.get("street_name"), b.get("house_number")] if x)
+        # street_name usually already holds the number; append house_number only if missing
+        street, hn = b.get("street_name") or "", b.get("house_number") or ""
+        addr = clean_address(street if not hn or re.search(rf"(^|\D){re.escape(hn)}($|\D)", street) else f"{street} {hn}")
         a = {"t": t, "hs": num("heat_spec"), "hk": num("heat_kwh"), "ha": num("heated_area"),
              "y": b.get("year") or None, "u": b.get("usage") or None, "a": addr or None}
         if cb:
