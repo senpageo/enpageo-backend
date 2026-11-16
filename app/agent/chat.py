@@ -4,7 +4,12 @@ import os
 import anthropic
 from sqlalchemy.orm import Session
 
+from . import analysis
+from .presentation import choose
 from .tools import TOOLS, execute_tool, to_openai_tools
+
+ALL_TOOLS = TOOLS + analysis.TOOLS
+MAX_ROWS_FOR_LLM = 40
 
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.42.25:11434")
@@ -23,15 +28,25 @@ Du kannst außerdem Straßen- und Anlagenbäume (Berlin Baumbestand) nach Art, K
 Bezirk oder Herkunft (Straße/Anlage) filtern (find_trees).
 Außerdem kannst du Dach-Kühlanlagen (Klimaanlagen-Kondensatoren, Kühltürme — per Luftbildauswertung \
 erkannt) nach Klasse, Erkennungssicherheit oder Grundfläche filtern (find_chillers).
+Für Anzahlen, Summen, Anteile, Verteilungen und Vergleiche zwischen Gruppen fasst du Gebäude zusammen \
+(aggregate_buildings: Heiz-/Kältebedarf, Kälteleistung, Fläche oder Anzahl; ohne group_by als eine einzelne Zahl, sonst \
+je Nutzungsart, Bezirk, Postleitzahl und/oder Baualtersklasse; share_of_total für Anteile). Für den Jahresverlauf des \
+Kältebedarfs nutzt du monthly_profile. Für Hotspots, Dichte, die Eignung von Kältenetzen und die Überlagerung von Wärme \
+und Kälte nutzt du density_grid. Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
+heißt Baujahr 1870 bis 1918.
+Dir fehlen noch: Klimaszenarien und Zukunftsjahre, Wirkung von Maßnahmen, Innenraumtemperaturen, Wärmebelastung, Strom, PV, \
+Kältenetze, Leistung je Kühlanlage, Städte außer Berlin, Eigentum, U-Werte und Sanierungsstand, Rechenzentren. Braucht eine \
+Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
 
 Regeln:
 - Antworte auf Deutsch, knapp und konkret.
 - Nenne in deiner Antwort immer die echten Zahlen aus dem Tool-Ergebnis (Anzahl, Durchschnittswerte) — \
 erfinde niemals Werte.
 - Wenn "truncated" im Tool-Ergebnis true ist, weise darauf hin, dass es noch mehr Treffer gibt, als angezeigt werden.
-- Die Tools durchsuchen entweder eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden) oder \
-sonst den aktuell sichtbaren Kartenausschnitt — keine benannten Bezirke/Stadtteile (außer beim Baum-Attribut \
-"Bezirk" selbst); falls danach gefragt wird, erkläre das kurz statt zu raten.
+- Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
+aktuell sichtbaren Kartenausschnitt. Benannte Berliner Bezirke und ganz Berlin gehen mit aggregate_buildings und \
+monthly_profile (Parameter districts bzw. scope) sowie beim Baum-Attribut "Bezirk"; andere Ortsnamen (Kieze, \
+Straßen) kannst du nicht auflösen — erkläre das kurz statt zu raten.
 - Wurde ein Punkt oder eine Linie gezeichnet und die Nutzerin nennt IRGENDEINEN Abstand (z.B. "im Abstand von \
 100m", "im Radius von 10m", "im Umkreis von 50 Metern", "in 1km Entfernung"), MUSST du diesen Wert immer als \
 buffer_distance_m mitgeben — das ist nicht optional. Rechne dabei immer in Meter um (1km = 1000, 0,5km = 500). \
@@ -40,9 +55,37 @@ Bei einem gezeichneten Polygon oder ganz ohne Zeichnung lass buffer_distance_m w
 eine eigene Umschreibung — im Zweifel wähle die nächstliegende exakte Kategorie statt zu raten.
 - Enthält das Tool-Ergebnis "search_area_m2", nenne die berechnete Fläche in der Antwort (in m², bei großen \
 Flächen gerne gerundet in ha).
-- Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt ein Tool ohne Filter aufzurufen.
-- Rufe pro Antwort nur eines der drei Tools auf, je nachdem ob nach Gebäuden, Bäumen oder Kühlanlagen gefragt wird.
+- Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt ein Tool ohne Filter aufzurufen. \
+Ebenso bei offenen Angaben wie „Gebäude X“ oder „Quartier XY“: nachfragen statt raten.
+- Folgefragen beziehen sich auf den bisherigen Gesprächsverlauf, auch wenn das Gebiet nicht noch einmal genannt wird.
+- Rufe pro Antwort genau ein Datenwerkzeug auf: find_* für einzelne Objekte, die übrigen für zusammengefasste Werte.
+- Die Darstellung (Karte, Diagramm, Tabelle) wählt die Anwendung selbst. Beschreibe das Ergebnis in 1–3 Sätzen mit \
+den wichtigsten Zahlen; nenne beim Kältebedarf, dass es ein grober Platzhalter-Schätzwert ist.
 """
+
+
+def _for_llm(result: dict) -> dict:
+    """What the model sees of a tool result: the compact summary of find_* tools, or a result frame cut to
+    MAX_ROWS_FOR_LLM rows (enough to describe it, without flooding the context)."""
+    if "summary_for_llm" in result:
+        return result["summary_for_llm"]
+    if "kind" in result:
+        return {
+            "kind": result["kind"],
+            "fields": [f["name"] for f in result["fields"]],
+            "rows": result["rows"][:MAX_ROWS_FOR_LLM],
+            "total_rows": result["total"],
+            "truncated": result["total"] > MAX_ROWS_FOR_LLM,
+            "notes": result["notes"],
+        }
+    return result
+
+
+def _presentation(frame_result: dict | None) -> dict:
+    """Result frame plus the chosen view for the frontend (rule-based chooser for now)."""
+    if not frame_result:
+        return {}
+    return {"frame": frame_result, "view": choose(frame_result)}
 
 
 def _geometry_context_note(polygon: dict | None) -> str:
@@ -67,13 +110,26 @@ def _geometry_context_note(polygon: dict | None) -> str:
     return ""
 
 
-def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | None) -> dict:
+MAX_HISTORY_TURNS = 6
+
+
+def _history_messages(history: list[dict] | None) -> list[dict]:
+    """Earlier user/assistant texts of this conversation (no tool traffic), so follow-up questions work."""
+    return [
+        {"role": m["role"], "content": str(m.get("content", ""))[:2000]}
+        for m in (history or [])[-MAX_HISTORY_TURNS:]
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+
+
+def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None) -> dict:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     system_prompt = SYSTEM_PROMPT + _geometry_context_note(polygon)
 
-    messages = [{"role": "user", "content": message}]
+    messages = [*_history_messages(history), {"role": "user", "content": message}]
     geojson_result = None
     layer_result = None
+    frame_result = None
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.messages.create(
@@ -81,7 +137,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
             max_tokens=1024,
             temperature=0,
             system=system_prompt,
-            tools=TOOLS,
+            tools=ALL_TOOLS,
             messages=messages,
         )
 
@@ -93,6 +149,7 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
                 "reply": "\n".join(text_blocks).strip(),
                 "geojson": geojson_result,
                 "layer": layer_result,
+                **_presentation(frame_result),
             }
 
         messages.append({"role": "assistant", "content": response.content})
@@ -100,12 +157,11 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
         tool_results = []
         for tool_use in tool_uses:
             result = execute_tool(tool_use.name, tool_use.input, db, bbox, polygon)
-            if "geojson" in result:
+            if result.get("geojson"):
                 geojson_result = result["geojson"]
                 layer_result = result.get("layer")
-                result_for_llm = result["summary_for_llm"]
-            else:
-                result_for_llm = result
+            frame_result = result.get("frame") or (result if "kind" in result else frame_result)
+            result_for_llm = _for_llm(result)
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -120,10 +176,11 @@ def _run_chat_anthropic(db: Session, message: str, bbox: str, polygon: dict | No
         "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
         "geojson": geojson_result,
         "layer": layer_result,
+        **_presentation(frame_result),
     }
 
 
-def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None) -> dict:
+def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None, history: list[dict] | None = None) -> dict:
     import httpx
     from openai import OpenAI
 
@@ -150,22 +207,25 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT + _geometry_context_note(polygon)},
+            *_history_messages(history),
             {"role": "user", "content": message},
         ]
         geojson_result = None
         layer_result = None
+        frame_result = None
 
         for _ in range(MAX_TOOL_ROUNDS):
             response = client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=messages,
-                tools=to_openai_tools(),
+                tools=to_openai_tools(ALL_TOOLS),
                 temperature=0,
             )
             msg = response.choices[0].message
 
             if not msg.tool_calls:
-                return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result}
+                return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result,
+                        **_presentation(frame_result)}
 
             messages.append(
                 {
@@ -178,12 +238,11 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
             for tool_call in msg.tool_calls:
                 tool_input = json.loads(tool_call.function.arguments or "{}")
                 result = execute_tool(tool_call.function.name, tool_input, db, bbox, polygon)
-                if "geojson" in result:
+                if result.get("geojson"):
                     geojson_result = result["geojson"]
                     layer_result = result.get("layer")
-                    result_for_llm = result["summary_for_llm"]
-                else:
-                    result_for_llm = result
+                frame_result = result.get("frame") or (result if "kind" in result else frame_result)
+                result_for_llm = _for_llm(result)
                 messages.append(
                     {
                         "role": "tool",
@@ -198,6 +257,7 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
             "reply": "Entschuldigung, das hat zu viele Schritte gebraucht. Kannst du die Frage konkreter stellen?",
             "geojson": geojson_result,
             "layer": layer_result,
+            **_presentation(frame_result),
         }
     finally:
         # The OpenAI SDK never closes a caller-supplied http_client, so without this every
@@ -209,8 +269,8 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None)
             http_client.close()
 
 
-def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None) -> dict:
+def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None, history: list[dict] | None = None) -> dict:
     provider = os.getenv("CHAT_PROVIDER", "ollama").lower()
     if provider == "anthropic":
-        return _run_chat_anthropic(db, message, bbox, polygon)
-    return _run_chat_ollama(db, message, bbox, polygon)
+        return _run_chat_anthropic(db, message, bbox, polygon, history)
+    return _run_chat_ollama(db, message, bbox, polygon, history)

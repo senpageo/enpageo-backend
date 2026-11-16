@@ -17,6 +17,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .agent.chat import run_chat
+from .agent.presentation import choose
+from .agent.tools import execute_tool
 from .database import get_db
 from .models import Location
 from .schemas import LocationOut
@@ -566,6 +568,13 @@ def list_buildings_3d(
     }
 
 
+# About a fifth of the trees in Baumbestand have no crown diameter. Drawn with the minimum radius they were
+# invisible dots; instead the crown is estimated from the tree height (linear fit over the street trees that
+# have both, r = 0.75: crown ≈ 0.53 × height + 0.5 m), 5 m if the height is missing too. Flagged in the
+# response as krone_geschaetzt.
+CROWN_DIAMETER_SQL = "COALESCE(NULLIF(kronedurch, 0), 0.53 * NULLIF(baumhoehe, 0) + 0.5, 5)"
+
+
 @app.get("/api/trees")
 def list_trees(
     bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat in WGS84"),
@@ -591,22 +600,24 @@ def list_trees(
             SELECT * FROM (
                 SELECT
                     gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'strassenbaum' AS herkunft,
+                    (kronedurch IS NULL OR kronedurch <= 0) AS krone_geschaetzt,
                     ST_AsGeoJSON(ST_Transform(
-                        ST_Buffer(geom, GREATEST(kronedurch / 2, :min_radius)), 4326
-                    )) AS geom
+                        ST_Buffer(geom, GREATEST({crown} / 2, :min_radius), 'quad_segs=4'), 4326
+                    ), 6) AS geom
                 FROM core_veg.strassenbaeume
                 WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
                 UNION ALL
                 SELECT
                     gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'anlagenbaum' AS herkunft,
+                    (kronedurch IS NULL OR kronedurch <= 0) AS krone_geschaetzt,
                     ST_AsGeoJSON(ST_Transform(
-                        ST_Buffer(geom, GREATEST(kronedurch / 2, :min_radius)), 4326
-                    )) AS geom
+                        ST_Buffer(geom, GREATEST({crown} / 2, :min_radius), 'quad_segs=4'), 4326
+                    ), 6) AS geom
                 FROM core_veg.anlagenbaeume
                 WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
             ) t
             LIMIT :limit
-            """
+            """.replace("{crown}", CROWN_DIAMETER_SQL)
         ),
         params,
     ).all()
@@ -619,6 +630,7 @@ def list_trees(
                 "geometry": json.loads(row.geom),
                 "properties": {
                     "gisid": row.gisid,
+                    "krone_geschaetzt": row.krone_geschaetzt,
                     "art": row.art_dtsch,
                     "gattung": row.gattung_deutsch,
                     "kronedurch": row.kronedurch,
@@ -684,6 +696,7 @@ class ChatRequest(BaseModel):
     message: str
     bbox: str
     polygon: dict | None = None
+    history: list[dict] | None = None
 
 
 @app.post("/api/chat")
@@ -691,4 +704,30 @@ def chat(req: ChatRequest, db: Session = Depends(get_db)):
     provider = os.getenv("CHAT_PROVIDER", "ollama").lower()
     if provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not configured on the server")
-    return run_chat(db, req.message, req.bbox, req.polygon)
+    return run_chat(db, req.message, req.bbox, req.polygon, req.history)
+
+
+class AnswerRequest(BaseModel):
+    tool: str
+    args: dict = {}
+    bbox: str = "13.0,52.3,13.8,52.7"
+    polygon: dict | None = None
+    chooser: str = "rule"
+
+
+@app.post("/api/answer")
+def answer(req: AnswerRequest, db: Session = Depends(get_db)):
+    """Run one chat tool directly and choose its presentation, without a language model.
+
+    For developing the answer view and for the benchmark's rule baseline: the same result frame and view spec
+    the chat returns, but with the tool call given explicitly instead of chosen by the model."""
+    result = execute_tool(req.tool, req.args, db, req.bbox, req.polygon)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    fr = result.get("frame") or result
+    return {
+        "frame": fr,
+        "view": choose(fr, req.chooser),
+        "geojson": result.get("geojson"),
+        "layer": result.get("layer"),
+    }

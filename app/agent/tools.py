@@ -3,9 +3,13 @@ _to_openai_tools() below derives the OpenAI/Ollama function-calling format from 
 source so both providers share one definition."""
 
 import json
+from functools import lru_cache
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from .frames import field, frame
 
 
 def _build_search_geom_expr(polygon: dict, buffer_distance_m: float | None, params: dict) -> str:
@@ -95,6 +99,58 @@ def _resolve_usage_zone_type(value: str) -> str:
     return USAGE_ZONE_ALIASES.get(folded.strip().lower(), USAGE_ZONE_ALIASES.get(key, folded))
 
 
+# Words that mean several categories at once (the expert questions have "Wohngebäude" and "sensible Gebäude").
+USAGE_ZONE_GROUPS = {
+    "wohngebaeude": ["Einfamilien-/ Reihenhaus", "Mehrfamilienhaus"],
+    "wohnen": ["Einfamilien-/ Reihenhaus", "Mehrfamilienhaus"],
+    "sensibel": ["Krankenhaus", "Pflegeheim", "Schule"],
+    "sensible gebaeude": ["Krankenhaus", "Pflegeheim", "Schule"],
+}
+
+
+def usage_condition(value: str, params: dict, column: str = 'pb."PrimaryUsageZoneType"') -> str:
+    """SQL condition for a usage filter; a group word (USAGE_ZONE_GROUPS) matches any of its categories."""
+    key = _fold_umlauts(value).strip().lower()
+    values = USAGE_ZONE_GROUPS.get(key) or [_resolve_usage_zone_type(value)]
+    ors = []
+    for k, v in enumerate(values):
+        params[f"usage_{k}"] = f"%{v}%"
+        ors.append(f"{column} ILIKE :usage_{k}")
+    return "(" + " OR ".join(ors) + ")"
+
+
+def district_condition(names: list[str], params: dict, geom: str = "b.geom") -> str:
+    """Spatial filter on named Berlin districts (fast for a few districts, GiST on both sides)."""
+    ors = []
+    for k, name in enumerate(names):
+        params[f"district_name_{k}"] = f"%{name}%"
+        ors.append(f"d.name ILIKE :district_name_{k}")
+    return f"EXISTS (SELECT 1 FROM emc.district d WHERE ({' OR '.join(ors)}) AND ST_Intersects(d.geom, {geom}))"
+
+
+@lru_cache(maxsize=256)
+def _resolve_place_cached(name: str) -> dict | None:
+    try:
+        r = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": name, "format": "jsonv2", "limit": 1, "polygon_geojson": 1, "polygon_threshold": 0.0005,
+                    "viewbox": "13.08,52.68,13.76,52.33", "bounded": 1},
+            headers={"User-Agent": "enpageo-coolingmap/1.0"},
+            timeout=10,
+        )
+        hits = r.json() if r.status_code == 200 else []
+    except httpx.HTTPError:
+        return None
+    if not hits:
+        return None
+    return {"geometry": hits[0]["geojson"], "label": hits[0].get("display_name", name)}
+
+
+def resolve_place(name: str) -> dict | None:
+    """Named place in Berlin -> GeoJSON geometry (OpenStreetMap Nominatim; only the place name is sent)."""
+    return _resolve_place_cached(name.strip().lower())
+
+
 MAX_RESULTS = 500
 DEFAULT_RESULTS = 200
 MIN_CROWN_RADIUS_M = 0.5
@@ -106,6 +162,16 @@ COOLING_DEMAND_EXPR = (
     "* COALESCE(ucp.specific_annual_cooling_kwh_m2, 20) "
     "* COALESCE(ucp.pct_07, 30) / 100"
 )
+COOLING_ANNUAL_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_annual_cooling_kwh_m2, 20)'
+# Required cooling capacity in kW: generic specific capacity per usage type (W/m²) × area. Placeholder like the demand.
+COOLING_CAPACITY_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_cooling_capacity_w_m2, 0) / 1000'
+HAS_CHILLER_EXPR = 'EXISTS (SELECT 1 FROM core_building."Chillers" c WHERE ST_Intersects(c.geom, b.geom))'
+FIND_BUILDINGS_SORT = {
+    "cooling_annual": "cooling_annual",
+    "cooling_capacity": "cooling_capacity_kw",
+    "heating_demand": "heating_demand",
+    "year_built": "year_built_int",
+}
 
 FIND_BUILDINGS_SCHEMA = {
     "type": "object",
@@ -124,10 +190,18 @@ FIND_BUILDINGS_SCHEMA = {
                 "'Schule, Kindertagesstaette und sonstige Betreuungsgebaeude' (school/daycare), "
                 "'Beherberungs- oder Unterbringungsgebaeude' (lodging), "
                 "'Sporthalle', 'Krankenhaus', 'Pflegeheim', 'Gastronomie- oder Verpflegungsgebaeude', "
-                "'Unbeheizt' (unheated). For 'residential' pick BOTH house types (call twice or omit "
-                "this filter and rely on the numeric filters instead)."
+                "'Unbeheizt' (unheated). Group words also work: 'Wohngebaeude' (both house types), "
+                "'sensibel' (hospitals, care homes, schools)."
             ),
         },
+        "min_cooling_capacity_kw": {"type": "number", "description": "Minimum required cooling capacity in kW (1 MW = 1000), generic placeholder"},
+        "max_cooling_capacity_kw": {"type": "number", "description": "Maximum required cooling capacity in kW"},
+        "has_chiller": {"type": "boolean", "description": "true: only buildings with a rooftop chiller detected from aerial imagery; false: only buildings without one"},
+        "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names); overrides the map view"},
+        "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'view' (default): drawn area or visible map. 'berlin': all of Berlin"},
+        "near_place": {"type": "string", "description": "Named place in Berlin (e.g. 'Tiergarten'); use with max_distance_m"},
+        "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
+        "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual"},
         "min_cooling_demand": {"type": "number", "description": "Minimum July cooling demand in kWh"},
         "max_cooling_demand": {"type": "number", "description": "Maximum July cooling demand in kWh"},
         "min_heating_demand": {"type": "number", "description": "Minimum yearly heating demand in kWh"},
@@ -220,6 +294,8 @@ FIND_CHILLERS_SCHEMA = {
             "type": "number",
             "description": "Minimum detection confidence, 0-100",
         },
+        "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names)"},
+        "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'berlin': all of Berlin instead of the visible map"},
         "min_shape_area": {"type": "number", "description": "Minimum footprint area in square meters"},
         "max_shape_area": {"type": "number", "description": "Maximum footprint area in square meters"},
         "buffer_distance_m": {
@@ -283,7 +359,7 @@ TOOLS = [
 ]
 
 
-def to_openai_tools() -> list[dict]:
+def to_openai_tools(tools: list[dict] | None = None) -> list[dict]:
     """Same tool definitions, reshaped for the OpenAI/Ollama function-calling format."""
     return [
         {
@@ -294,7 +370,7 @@ def to_openai_tools() -> list[dict]:
                 "parameters": t["input_schema"],
             },
         }
-        for t in TOOLS
+        for t in (tools if tools is not None else TOOLS)
     ]
 
 
@@ -311,13 +387,39 @@ def _execute_find_buildings(
     max_year_built: int | None = None,
     buffer_distance_m: float | None = None,
     limit: int | None = None,
+    min_cooling_capacity_kw: float | None = None,
+    max_cooling_capacity_kw: float | None = None,
+    has_chiller: bool | None = None,
+    districts: list[str] | None = None,
+    scope: str | None = None,
+    near_place: str | None = None,
+    max_distance_m: float | None = None,
+    sort_by: str | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
     conditions = []
     params: dict = {"limit": limit}
+    notes: list[str] = []
+    sources = ["footprints", "building_params", "energymap_heating", "cooling_placeholder"]
 
-    if polygon:
+    if near_place:
+        place = resolve_place(near_place)
+        if not place:
+            return {"error": f"Ort '{near_place}' wurde in Berlin nicht gefunden"}
+        params["place_geojson"] = json.dumps(place["geometry"])
+        params["max_distance_m"] = float(max_distance_m or 1000)
+        conditions.append(
+            "ST_DWithin(b.geom, ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:place_geojson), 4326), 25833), :max_distance_m)"
+        )
+        notes.append(f"Ort aufgelöst als: {place['label']}")
+        sources.append("places")
+    elif districts:
+        conditions.append(district_condition(districts, params))
+        sources.append("districts")
+    elif scope == "berlin":
+        pass
+    elif polygon:
         # A user-drawn polygon/point/line is more precise than the map viewport — use it instead of bbox.
         search_geom = _build_search_geom_expr(polygon, buffer_distance_m, params)
         conditions.append(f"ST_Intersects(b.geom, {search_geom})")
@@ -332,8 +434,18 @@ def _execute_find_buildings(
             pass
 
     if usage_zone_type:
-        conditions.append('pb."PrimaryUsageZoneType" ILIKE :usage_zone_type')
-        params["usage_zone_type"] = f"%{_resolve_usage_zone_type(usage_zone_type)}%"
+        conditions.append(usage_condition(usage_zone_type, params))
+    if min_cooling_capacity_kw is not None:
+        conditions.append(f"({COOLING_CAPACITY_EXPR}) >= :min_cooling_capacity_kw")
+        params["min_cooling_capacity_kw"] = min_cooling_capacity_kw
+    if max_cooling_capacity_kw is not None:
+        conditions.append(f"({COOLING_CAPACITY_EXPR}) <= :max_cooling_capacity_kw")
+        params["max_cooling_capacity_kw"] = max_cooling_capacity_kw
+    if has_chiller is not None:
+        conditions.append(HAS_CHILLER_EXPR if has_chiller else f"NOT {HAS_CHILLER_EXPR}")
+        sources.append("chillers")
+        if has_chiller is False:
+            notes.append("„Keine Kühlanlage“ heißt: im Luftbild nichts erkannt. Innenliegende Anlagen sieht die Erkennung nicht.")
     if min_cooling_demand is not None:
         conditions.append(f"({COOLING_DEMAND_EXPR}) >= :min_cooling_demand")
         params["min_cooling_demand"] = min_cooling_demand
@@ -382,11 +494,14 @@ def _execute_find_buildings(
                 b.uuid AS bldg_uuid,
                 ST_AsGeoJSON(ST_Transform(b.geom, 4326)) AS geom,
                 ({COOLING_DEMAND_EXPR}) AS cooling_demand,
+                ({COOLING_ANNUAL_EXPR}) AS cooling_annual,
+                ({COOLING_CAPACITY_EXPR}) AS cooling_capacity_kw,
                 el.cons_c2r2 AS heating_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type,
-                pb."Year of construction" AS year_built
+                pb."Year of construction" AS year_built,
+                CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
-            ORDER BY cooling_demand DESC NULLS LAST
+            ORDER BY {FIND_BUILDINGS_SORT.get(sort_by or "", "cooling_annual")} DESC NULLS LAST
             LIMIT :limit
             """
         ),
@@ -400,6 +515,8 @@ def _execute_find_buildings(
             "properties": {
                 "bldg_uuid": row.bldg_uuid,
                 "cooling_demand": row.cooling_demand,
+                "cooling_annual": row.cooling_annual,
+                "cooling_capacity_kw": row.cooling_capacity_kw,
                 "heating_demand": row.heating_demand,
                 "usage_zone_type": row.usage_zone_type,
                 "year_built": row.year_built,
@@ -411,9 +528,39 @@ def _execute_find_buildings(
     cooling_values = [f["properties"]["cooling_demand"] for f in features if f["properties"]["cooling_demand"] is not None]
     heating_values = [f["properties"]["heating_demand"] for f in features if f["properties"]["heating_demand"] is not None]
 
+    # Typed result for the presentation chooser (frames.py); geometry stays out of it, the map joins by uuid.
+    building_frame = frame(
+        "features",
+        [
+            field("bldg_uuid", "id", "Gebäude-ID"),
+            field("usage_zone_type", "nominal", "Nutzungsart"),
+            field("year_built", "ordinal", "Baujahr"),
+            field("heating_demand", "quantitative", "Heizwärmebedarf", "kWh/a"),
+            field("cooling_annual", "quantitative", "Kältebedarf (Platzhalter)", "kWh/a"),
+            field("cooling_capacity_kw", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
+        ],
+        [
+            {k: (round(float(v), 1) if k in ("heating_demand", "cooling_annual", "cooling_capacity_kw") and v is not None else v)
+             for k, v in f["properties"].items() if k != "cooling_demand"}
+            for f in features
+        ],
+        sources,
+        ids=[f["properties"]["bldg_uuid"] for f in features],
+        total=total,
+        query={"usage_zone_type": usage_zone_type, "min_cooling_demand": min_cooling_demand,
+               "max_cooling_demand": max_cooling_demand, "min_heating_demand": min_heating_demand,
+               "max_heating_demand": max_heating_demand, "min_year_built": min_year_built,
+               "max_year_built": max_year_built, "buffer_distance_m": buffer_distance_m,
+               "min_cooling_capacity_kw": min_cooling_capacity_kw, "max_cooling_capacity_kw": max_cooling_capacity_kw,
+               "has_chiller": has_chiller, "districts": districts, "scope": scope, "near_place": near_place,
+               "max_distance_m": max_distance_m, "sort_by": sort_by},
+        notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."],
+    )
+
     return {
         "layer": "buildings",
         "geojson": {"type": "FeatureCollection", "features": features},
+        "frame": building_frame,
         "summary_for_llm": {
             "total_matches": total,
             "returned": len(features),
@@ -550,13 +697,19 @@ def _execute_find_chillers(
     max_shape_area: float | None = None,
     buffer_distance_m: float | None = None,
     limit: int | None = None,
+    districts: list[str] | None = None,
+    scope: str | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
     conditions = []
     params: dict = {"limit": limit}
 
-    if polygon:
+    if districts:
+        conditions.append(district_condition(districts, params, "geom"))
+    elif scope == "berlin":
+        pass
+    elif polygon:
         search_geom = _build_search_geom_expr(polygon, buffer_distance_m, params)
         conditions.append(f"ST_Intersects(geom, {search_geom})")
     elif bbox:
@@ -616,9 +769,27 @@ def _execute_find_chillers(
         for row in rows
     ]
 
+    chiller_frame = frame(
+        "features",
+        [
+            field("objectid", "id", "Objekt-ID"),
+            field("class", "nominal", "Klasse"),
+            field("confidence", "quantitative", "Erkennungssicherheit", "%"),
+            field("shape_area", "quantitative", "Grundfläche", "m²"),
+        ],
+        [{k: (round(float(v), 1) if k in ("confidence", "shape_area") and v is not None else v)
+          for k, v in f["properties"].items()} for f in features],
+        ["chillers"] + (["districts"] if districts else []),
+        ids=[str(f["properties"]["objectid"]) for f in features],
+        total=total,
+        query={"chiller_class": chiller_class, "districts": districts, "scope": scope},
+        notes=["Die Kälteleistung je Anlage liegt noch nicht vor (kommt vom KIT)."],
+    )
+
     return {
         "layer": "chillers",
         "geojson": {"type": "FeatureCollection", "features": features},
+        "frame": chiller_frame,
         "summary_for_llm": {
             "total_matches": total,
             "returned": len(features),
@@ -635,4 +806,7 @@ def execute_tool(name: str, tool_input: dict, db: Session, bbox: str | None, pol
         return _execute_find_trees(db, bbox, polygon, **tool_input)
     if name == "find_chillers":
         return _execute_find_chillers(db, bbox, polygon, **tool_input)
-    return {"error": f"unknown tool {name}"}
+    from . import analysis  # imported here: analysis reuses helpers from this module
+
+    result = analysis.execute(name, tool_input, db, bbox, polygon)
+    return result if result is not None else {"error": f"unknown tool {name}"}
