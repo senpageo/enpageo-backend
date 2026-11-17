@@ -176,7 +176,7 @@ def resolve_building_function(db: Session, value: str) -> list[int]:
 def building_function_condition(db: Session, value: str, params: dict) -> str | None:
     # ALKIS has no function code for data centres; they come from OSM/PeeringDB (core_bldg.data_center_building)
     if "rechenzent" in _fold_umlauts(value).lower() or "data cent" in value.lower():
-        return "dcb.uuid IS NOT NULL"
+        return DC_IN  # small id list first, so the planner does not scan all buildings
     codes = resolve_building_function(db, value)
     if not codes:
         return None
@@ -195,6 +195,9 @@ KWW_JOINS = f"""
         LEFT JOIN core_bldg.pv_potential_building pvp ON pvp.uuid = b.uuid
         LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = b.uuid
         LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid"""
+
+DC_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.data_center_building))"
+PV_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.pv_installed_building))"
 
 OWNER_CLASSES = {
     "land_berlin": "own.uuid IS NOT NULL",
@@ -242,12 +245,12 @@ def extra_conditions(params: dict, owner: str | None = None, new_building: bool 
     if new_building is not None:
         cond.append(f"{_YEAR_INT} {'>=' if new_building else '<'} {NEW_BUILDING_FROM_YEAR}")
     if has_pv is not None:
-        cond.append("pvi.uuid IS NOT NULL" if has_pv else "pvi.uuid IS NULL")
+        cond.append(PV_IN if has_pv else "pvi.uuid IS NULL")
     if min_pv_potential_kwp is not None:
         cond.append("COALESCE(pvp.potential_kwp, 0) >= :min_pv_potential_kwp")
         params["min_pv_potential_kwp"] = min_pv_potential_kwp
     if data_center is not None:
-        cond.append("dcb.uuid IS NOT NULL" if data_center else "dcb.uuid IS NULL")
+        cond.append(DC_IN if data_center else "dcb.uuid IS NULL")
     return cond
 
 
@@ -623,7 +626,7 @@ def _execute_find_buildings(
         if cond is None:
             return {"error": f"Gebäudefunktion '{building_function}' ist im ALKIS-Katalog nicht bekannt"}
         conditions.append(cond)
-        sources.append("data_centers" if cond.startswith("dcb.") else "alkis_function")
+        sources.append("data_centers" if cond == DC_IN else "alkis_function")
     if process_heat is not None:
         conditions.append(process_heat_condition(process_heat))
         sources.append("kww_process_heat")
