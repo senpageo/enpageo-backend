@@ -639,7 +639,7 @@ def _execute_find_buildings(
                 "heating_demand": row.heating_demand,
                 "usage_zone_type": row.usage_zone_type,
                 "building_function": row.building_function,
-                "gfk": row.gfk,
+                "gfk": str(row.gfk) if row.gfk is not None else None,  # a code, not a number (no "3.022")
                 "year_built": row.year_built,
                 "kww_heat_demand": float(row.kww_heat_demand) if row.kww_heat_demand is not None else None,
                 "process_heat": row.process_heat,
@@ -663,7 +663,7 @@ def _execute_find_buildings(
             field("bldg_uuid", "id", "Gebäude-ID"),
             field("usage_zone_type", "nominal", "Nutzungsart"),
             field("building_function", "nominal", "Gebäudefunktion (ALKIS)"),
-            field("gfk", "ordinal", "ALKIS-Code"),
+            field("gfk", "nominal", "ALKIS-Code"),
             field("year_built", "ordinal", "Baujahr"),
             field("heating_demand", "quantitative", "Heizwärmebedarf", "kWh/a"),
             field("kww_heat_demand", "quantitative", "Wärmebedarf KWW (Heizung + Warmwasser)", "kWh/a"),
