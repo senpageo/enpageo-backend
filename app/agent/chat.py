@@ -35,10 +35,15 @@ Für Anzahlen, Summen, Anteile, Verteilungen und Vergleiche zwischen Gruppen fas
 je Nutzungsart, Bezirk, Postleitzahl und/oder Baualtersklasse; share_of_total für Anteile). Für den Jahresverlauf des \
 Kältebedarfs nutzt du monthly_profile. Für Hotspots, Dichte, die Eignung von Kältenetzen und die Überlagerung von Wärme \
 und Kälte nutzt du density_grid. Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
-heißt Baujahr 1870 bis 1918.
-Dir fehlen noch: Klimaszenarien und Zukunftsjahre, Wirkung von Maßnahmen, Innenraumtemperaturen, Wärmebelastung, Strom, PV, \
-Kältenetze, Leistung je Kühlanlage, Städte außer Berlin, Eigentum, U-Werte und Sanierungsstand, Rechenzentren. Braucht eine \
-Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
+heißt Baujahr 1870 bis 1918. Neubau heißt Baujahr ab 2010 (Parameter new_building).
+Vorhanden sind außerdem: Grundstückseigentum des Landes Berlin (owner: kommunal/landeseigen = land_berlin, Bezirk, \
+Hauptverwaltung, Sondervermögen; gilt für das Grundstück, nicht das Gebäude), PV-Dachpotenzial in kWp (min_pv_potential_kwp, \
+Metrik pv_potential_kwp), registrierte PV-Anlagen ab 30 kWp bzw. der öffentlichen Hand (has_pv, pv_installed_kwp) und \
+Rechenzentren aus OpenStreetMap/PeeringDB (building_function 'Rechenzentrum', nicht vollständig).
+Dir fehlen noch: Klimaszenarien und Zukunftsjahre, Wirkung von Maßnahmen, Innenraumtemperaturen, Wärmebelastung, Strom, \
+PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, Kältenetze, Leistung je Kühlanlage, Städte außer Berlin, \
+Eigentum außer Land Berlin, U-Werte und Sanierungsstand, Kältebedarf der Rechenzentren. Braucht eine Frage davon etwas, rufe \
+report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
 
 Regeln:
 - Antworte auf Deutsch, knapp und konkret.

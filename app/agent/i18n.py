@@ -44,6 +44,20 @@ EXACT = {
     "Prozesswärme-Relevanz nach KWW-Technikkatalog (Tab 56)": "Process-heat relevance after the KWW catalogue (Tab 56)",
     "Bruttogeschossfläche": "Gross floor area",
     "Kennwertverfahren, bundesweite Mittelwerte": "Benchmark method, national averages",
+    "Grundstückseigentum": "Plot ownership",
+    "PV-Potenzial Dach": "Rooftop PV potential",
+    "PV installiert (ab 30 kWp / öffentlich)": "PV installed (from 30 kWp / public sector)",
+    "Rechenzentrum": "Data centre",
+    "Land Berlin – Bezirksverwaltung": "State of Berlin – district administration",
+    "Land Berlin – Hauptverwaltung": "State of Berlin – senate administration",
+    "Land Berlin – Sondervermögen/Liegenschaftsfonds": "State of Berlin – property funds",
+    "nicht landeseigen / unbekannt": "not state-owned / unknown",
+    "Berliner Landesgrundvermögen (Grundstücke des Landes Berlin)": "Berlin state property register (plots owned by the State of Berlin)",
+    "Solarpotenzial Berlin (Solarrechner), geeignete Dachflächen je Gebäude": "Berlin solar cadastre, suitable roof areas per building",
+    "PV-Bestandsanlagen, Umweltatlas Berlin (Basis Marktstammdatenregister)": "Existing PV systems, Berlin environmental atlas (based on the market master data register)",
+    "Rechenzentren aus OpenStreetMap und PeeringDB": "Data centres from OpenStreetMap and PeeringDB",
+    "unvollständig": "incomplete",
+    "kleine private Anlagen fehlen je Gebäude": "small private systems missing per building",
     # units
     "Gebäude": "buildings",
     "Anlagen": "units",
@@ -172,7 +186,7 @@ def tr(s):
 
 
 # row fields that hold German category values (not names, numbers or ids)
-_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat"}
+_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat", "plot_owner"}
 
 
 def localize(fr: dict | None, lang: str | None) -> dict | None:

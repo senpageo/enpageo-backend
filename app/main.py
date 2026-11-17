@@ -301,6 +301,38 @@ def building_kww(uuid: str, db: Session = Depends(get_db)):
         "process_heat": r0.process_heat,
         "process_heat_data_collection": r0.data_collection,
         "process_heat_precondition": r0.precondition,
+        **_building_extras(db, uuid),
+    }
+
+
+def _building_extras(db: Session, uuid: str) -> dict:
+    """Plot ownership (Land Berlin), PV potential and stock, data centre entries for one building."""
+    r = db.execute(
+        text(
+            """
+            SELECT own.owner_class, own.vermoegensstelle,
+                   pvp.potential_kwp, pvp.suitable_area_m2,
+                   pvi.installed_kwp, pvi.n_installations, pvi.institutions,
+                   dcb.names AS data_center, dcb.operators AS data_center_operator
+            FROM (SELECT :uuid AS uuid) x
+            LEFT JOIN core_bldg.building_ownership own ON own.uuid = x.uuid
+            LEFT JOIN core_bldg.pv_potential_building pvp ON pvp.uuid = x.uuid
+            LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = x.uuid
+            LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = x.uuid
+            """
+        ),
+        {"uuid": uuid},
+    ).one()
+    num = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "plot_owner": r.owner_class,
+        "plot_owner_detail": r.vermoegensstelle,
+        "pv_potential_kwp": num(r.potential_kwp),
+        "pv_suitable_area_m2": num(r.suitable_area_m2),
+        "pv_installed_kwp": num(r.installed_kwp),
+        "pv_installations": r.n_installations,
+        "data_center": r.data_center,
+        "data_center_operator": r.data_center_operator,
     }
 
 

@@ -174,6 +174,9 @@ def resolve_building_function(db: Session, value: str) -> list[int]:
 
 
 def building_function_condition(db: Session, value: str, params: dict) -> str | None:
+    # ALKIS has no function code for data centres; they come from OSM/PeeringDB (core_bldg.data_center_building)
+    if "rechenzent" in _fold_umlauts(value).lower() or "data cent" in value.lower():
+        return "dcb.uuid IS NOT NULL"
     codes = resolve_building_function(db, value)
     if not codes:
         return None
@@ -181,12 +184,76 @@ def building_function_condition(db: Session, value: str, params: dict) -> str | 
     return "b.gfk = ANY(:bf_codes)"
 
 
-# KWW-Technikkatalog (core_bldg.kww_*): Endenergie Heizung + Warmwasser je BGF and process-heat relevance (Tab 56)
+# KWW-Technikkatalog (core_bldg.kww_*): Endenergie Heizung + Warmwasser je BGF and process-heat relevance (Tab 56),
+# plus the free Berlin extras from tools/geodaten_berlin (ownership of the plot, PV potential/stock, data centres).
 KWW_SCENARIO = "2025"
 KWW_JOINS = f"""
         LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
         LEFT JOIN core_bldg.kww_process_heat kph ON kph.function_label = kg.process_heat_function
-        LEFT JOIN core_bldg.kww_heat_demand_building kh ON kh.uuid = b.uuid AND kh.scenario = '{KWW_SCENARIO}'"""
+        LEFT JOIN core_bldg.kww_heat_demand_building kh ON kh.uuid = b.uuid AND kh.scenario = '{KWW_SCENARIO}'
+        LEFT JOIN core_bldg.building_ownership own ON own.uuid = b.uuid
+        LEFT JOIN core_bldg.pv_potential_building pvp ON pvp.uuid = b.uuid
+        LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = b.uuid
+        LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid"""
+
+OWNER_CLASSES = {
+    "land_berlin": "own.uuid IS NOT NULL",
+    "bezirk": "own.owner_class = 'Land Berlin – Bezirksverwaltung'",
+    "hauptverwaltung": "own.owner_class = 'Land Berlin – Hauptverwaltung'",
+    "sondervermoegen": "own.owner_class = 'Land Berlin – Sondervermögen/Liegenschaftsfonds'",
+    "nicht_landeseigen": "own.uuid IS NULL",
+}
+OWNER_EXPR = "COALESCE(own.owner_class, 'nicht landeseigen / unbekannt')"
+NEW_BUILDING_FROM_YEAR = 2010  # "Neubau": KWW age class 'ab 2010' (EnEV 2009); data has block-wise age classes
+_YEAR_INT = 'CASE WHEN pb."Year of construction" ~ \'^[0-9]+$\' THEN pb."Year of construction"::int END'
+
+EXTRA_FILTER_PROPS = {
+    "owner": {
+        "type": "string", "enum": list(OWNER_CLASSES),
+        "description": (
+            "Ownership of the PLOT (not the building) from the Berlin state property register: 'land_berlin' (any "
+            "state-owned plot), 'bezirk' (district administrations: schools, daycare, sports, parks/allotments), "
+            "'hauptverwaltung' (senate administrations), 'sondervermoegen' (state property funds SILB/SODA, "
+            "Liegenschaftsfonds), 'nicht_landeseigen' (not state-owned OR unknown: federal, private, companies, "
+            "municipal housing companies are not available per building). Use for 'kommunal', 'landeseigen', "
+            "'öffentliche Liegenschaften'."),
+    },
+    "new_building": {
+        "type": "boolean",
+        "description": f"true: only new buildings (Neubau = year of construction from {NEW_BUILDING_FROM_YEAR}); "
+                       "false: only older ones.",
+    },
+    "has_pv": {
+        "type": "boolean",
+        "description": "true: only buildings with a registered PV system (> 30 kWp or on public-sector property; "
+                       "small private systems are not available per building); false: only without.",
+    },
+    "min_pv_potential_kwp": {"type": "number", "description": "Minimum rooftop PV potential in kWp (Berlin solar cadastre)"},
+    "data_center": {"type": "boolean", "description": "true: only data centres (from OpenStreetMap and PeeringDB, not complete)"},
+}
+
+
+def extra_conditions(params: dict, owner: str | None = None, new_building: bool | None = None,
+                     has_pv: bool | None = None, min_pv_potential_kwp: float | None = None,
+                     data_center: bool | None = None, **_ignored) -> list[str]:
+    cond = []
+    if owner in OWNER_CLASSES:
+        cond.append(OWNER_CLASSES[owner])
+    if new_building is not None:
+        cond.append(f"{_YEAR_INT} {'>=' if new_building else '<'} {NEW_BUILDING_FROM_YEAR}")
+    if has_pv is not None:
+        cond.append("pvi.uuid IS NOT NULL" if has_pv else "pvi.uuid IS NULL")
+    if min_pv_potential_kwp is not None:
+        cond.append("COALESCE(pvp.potential_kwp, 0) >= :min_pv_potential_kwp")
+        params["min_pv_potential_kwp"] = min_pv_potential_kwp
+    if data_center is not None:
+        cond.append("dcb.uuid IS NOT NULL" if data_center else "dcb.uuid IS NULL")
+    return cond
+
+
+def extra_sources(owner=None, has_pv=None, min_pv_potential_kwp=None, data_center=None, **_) -> list[str]:
+    return ((["state_property"] if owner else []) + (["pv_installed"] if has_pv is not None else [])
+            + (["pv_potential"] if min_pv_potential_kwp is not None else []) + (["data_centers"] if data_center else []))
 # Tab 56 lists only non-residential functions; residential buildings (EZFH/MFH) have no process heat -> 'Nein'.
 # Other functions missing from Tab 56 stay NULL (not rated).
 PROCESS_HEAT_EXPR = ("COALESCE(kph.process_heat, CASE WHEN kg.residential_split OR kg.kww_type IN ('ezfh', 'mfh') "
@@ -250,6 +317,8 @@ FIND_BUILDINGS_SORT = {
     "cooling_capacity": "cooling_capacity_kw",
     "heating_demand": "heating_demand",
     "kww_heat_demand": "kww_heat_demand",
+    "pv_potential": "pv_potential_kwp",
+    "pv_installed": "pv_installed_kwp",
     "year_built": "year_built_int",
 }
 
@@ -261,7 +330,8 @@ BUILDING_FUNCTION_PROP = {
         "daycare), 'Kita', 'Hochschule', 'Schwimmbad', 'Hallenbad', 'Krankenhaus', 'Pflegeheim', 'Sporthalle', "
         "'Hotel', 'Kirche', 'Museum', 'Theater', 'Bibliothek', 'Rathaus', 'Polizei', 'Feuerwehr', 'Kaufhaus', "
         "'Einkaufszentrum', 'Fabrik', 'Werkstatt', 'Bahnhof', 'Parkhaus', 'Gewächshaus', or any official German "
-        "ALKIS function name or part of it (e.g. 'Seniorenheim', 'Kinderheim'), or 4-digit ALKIS codes like '3021'."
+        "ALKIS function name or part of it (e.g. 'Seniorenheim', 'Kinderheim'), or 4-digit ALKIS codes like '3021'. "
+        "'Rechenzentrum' works too (from OpenStreetMap/PeeringDB, not complete)."
     ),
 }
 PROCESS_HEAT_PROP = {
@@ -278,6 +348,7 @@ FIND_BUILDINGS_SCHEMA = {
     "properties": {
         "building_function": BUILDING_FUNCTION_PROP,
         "process_heat": PROCESS_HEAT_PROP,
+        **EXTRA_FILTER_PROPS,
         "usage_zone_type": {
             "type": "string",
             "description": (
@@ -502,6 +573,11 @@ def _execute_find_buildings(
     sort_by: str | None = None,
     building_function: str | None = None,
     process_heat: bool | None = None,
+    owner: str | None = None,
+    new_building: bool | None = None,
+    has_pv: bool | None = None,
+    min_pv_potential_kwp: float | None = None,
+    data_center: bool | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
@@ -547,10 +623,14 @@ def _execute_find_buildings(
         if cond is None:
             return {"error": f"Gebäudefunktion '{building_function}' ist im ALKIS-Katalog nicht bekannt"}
         conditions.append(cond)
-        sources.append("alkis_function")
+        sources.append("data_centers" if cond.startswith("dcb.") else "alkis_function")
     if process_heat is not None:
         conditions.append(process_heat_condition(process_heat))
         sources.append("kww_process_heat")
+    conditions += extra_conditions(params, owner, new_building, has_pv, min_pv_potential_kwp, data_center)
+    sources += extra_sources(owner=owner, has_pv=has_pv, min_pv_potential_kwp=min_pv_potential_kwp,
+                             data_center=data_center)
+
     if min_cooling_capacity_kw is not None:
         conditions.append(f"({COOLING_CAPACITY_EXPR}) >= :min_cooling_capacity_kw")
         params["min_cooling_capacity_kw"] = min_cooling_capacity_kw
@@ -621,6 +701,10 @@ def _execute_find_buildings(
                 kg.gfk_name AS building_function,
                 kh.heat_dhw_kwh_a AS kww_heat_demand,
                 {PROCESS_HEAT_EXPR} AS process_heat,
+                {OWNER_EXPR} AS plot_owner,
+                pvp.potential_kwp AS pv_potential_kwp,
+                pvi.installed_kwp AS pv_installed_kwp,
+                dcb.names AS data_center,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
@@ -647,6 +731,10 @@ def _execute_find_buildings(
                 "year_built": row.year_built,
                 "kww_heat_demand": float(row.kww_heat_demand) if row.kww_heat_demand is not None else None,
                 "process_heat": row.process_heat,
+                "plot_owner": row.plot_owner,
+                "pv_potential_kwp": float(row.pv_potential_kwp) if row.pv_potential_kwp is not None else None,
+                "pv_installed_kwp": float(row.pv_installed_kwp) if row.pv_installed_kwp is not None else None,
+                "data_center": row.data_center,
             },
         }
         for row in rows
@@ -672,6 +760,10 @@ def _execute_find_buildings(
             field("heating_demand", "quantitative", "Heizwärmebedarf", "kWh/a"),
             field("kww_heat_demand", "quantitative", "Wärmebedarf KWW (Heizung + Warmwasser)", "kWh/a"),
             field("process_heat", "nominal", "Prozesswärme (KWW)"),
+            field("plot_owner", "nominal", "Grundstückseigentum"),
+            field("pv_potential_kwp", "quantitative", "PV-Potenzial Dach", "kWp"),
+            field("pv_installed_kwp", "quantitative", "PV installiert (ab 30 kWp / öffentlich)", "kWp"),
+            field("data_center", "nominal", "Rechenzentrum"),
             field("cooling_annual", "quantitative", "Kältebedarf (Platzhalter)", "kWh/a"),
             field("cooling_capacity_kw", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
         ],
@@ -690,7 +782,8 @@ def _execute_find_buildings(
                "min_cooling_capacity_kw": min_cooling_capacity_kw, "max_cooling_capacity_kw": max_cooling_capacity_kw,
                "has_chiller": has_chiller, "districts": districts, "scope": scope, "near_place": near_place,
                "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
-               "process_heat": process_heat},
+               "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
+               "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center},
         notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."],
     )
 
@@ -707,6 +800,10 @@ def _execute_find_buildings(
             "sum_kww_heat_demand_kwh": round(sum(kww_values)) if kww_values else None,
             "building_functions": dict(sorted(functions.items(), key=lambda kv: -kv[1])[:8]),
             "with_process_heat": sum(1 for f in features if f["properties"]["process_heat"] in ("Ja", "Ja/Nein")),
+            "on_state_owned_plot": sum(1 for f in features if f["properties"]["plot_owner"].startswith("Land Berlin")),
+            "sum_pv_potential_kwp": round(sum(f["properties"]["pv_potential_kwp"] or 0 for f in features)),
+            "with_pv_installed": sum(1 for f in features if f["properties"]["pv_installed_kwp"]),
+            "data_centers": sorted({f["properties"]["data_center"] for f in features if f["properties"]["data_center"]})[:10],
             "search_area_m2": _buffered_search_area_m2(db, polygon, buffer_distance_m) if polygon else None,
         },
     }
