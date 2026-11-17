@@ -187,6 +187,10 @@ KWW_JOINS = f"""
         LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
         LEFT JOIN core_bldg.kww_process_heat kph ON kph.function_label = kg.process_heat_function
         LEFT JOIN core_bldg.kww_heat_demand_building kh ON kh.uuid = b.uuid AND kh.scenario = '{KWW_SCENARIO}'"""
+# Tab 56 lists only non-residential functions; residential buildings (EZFH/MFH) have no process heat -> 'Nein'.
+# Other functions missing from Tab 56 stay NULL (not rated).
+PROCESS_HEAT_EXPR = ("COALESCE(kph.process_heat, CASE WHEN kg.residential_split OR kg.kww_type IN ('ezfh', 'mfh') "
+                     "THEN 'Nein' END)")
 
 
 def process_heat_condition(value: bool) -> str:
@@ -616,7 +620,7 @@ def _execute_find_buildings(
                 b.gfk,
                 kg.gfk_name AS building_function,
                 kh.heat_dhw_kwh_a AS kww_heat_demand,
-                kph.process_heat,
+                {PROCESS_HEAT_EXPR} AS process_heat,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}

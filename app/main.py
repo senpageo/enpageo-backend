@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .agent.chat import allowed_models, run_chat
 from .agent.i18n import localize, localize_view
 from .agent.presentation import CHOOSERS, choose
-from .agent.tools import execute_tool
+from .agent.tools import PROCESS_HEAT_EXPR, execute_tool
 from .database import get_db
 from .models import Location
 from .schemas import LocationOut
@@ -265,11 +265,11 @@ def building_kww(uuid: str, db: Session = Depends(get_db)):
     for the info panel. Values come from core_bldg.kww_heat_demand_building (tools/kww/kww_waermebedarf.py)."""
     rows = db.execute(
         text(
-            """
+            f"""
             SELECT b.gfk, kg.gfk_name, kg.mapping_quality, t.label AS kww_label,
                    kh.scenario, kh.bgf_m2, kh.storeys, kh.storeys_source, kh.age_class,
                    kh.kwh_per_m2_bgf_a, kh.heat_dhw_kwh_a,
-                   kph.process_heat, kph.data_collection, kph.precondition
+                   {PROCESS_HEAT_EXPR} AS process_heat, kph.data_collection, kph.precondition
             FROM emc.building b
             LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
             LEFT JOIN core_bldg.kww_process_heat kph ON kph.function_label = kg.process_heat_function
