@@ -194,7 +194,19 @@ KWW_JOINS = f"""
         LEFT JOIN core_bldg.building_ownership own ON own.uuid = b.uuid
         LEFT JOIN core_bldg.pv_potential_building pvp ON pvp.uuid = b.uuid
         LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = b.uuid
-        LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid"""
+        LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid
+        LEFT JOIN core_bldg.cooling_estimate_building cact ON cact.uuid = b.uuid
+        LEFT JOIN core_bldg.network_connection ncon ON ncon.uuid = b.uuid"""
+
+# Actual cooling from detected chillers (tools/kaelte/kaelte_ist_schaetzung.py): rough, with a min-max band
+COOLING_ACTUAL_NOTE = (
+    "Ist-Kälteverbrauch und Kältestrom sind grobe Schätzungen aus den im Luftbild erkannten Kälteanlagen "
+    "(Kälteleistung je Anlage aus der KIT-Liste mit Spanne, Überdimensionierung, Volllaststunden je Gebäudefunktion, Leistungszahl je "
+    "Anlagentyp). Die Unsicherheit ist groß, deshalb immer die Spanne min–max mit angeben. Anlagen versorgen oft "
+    "Nachbargebäude mit; die Zuordnung ist noch nicht validiert.")
+
+CHILLER_CAPACITY_NOTE = ("Kälteleistung je Anlage: Schätzung des KIT aus dem Luftbild (Mittelwert einer "
+                         "Monte-Carlo-Simulation, Standardabweichung als Unsicherheit), keine gemessenen Werte.")
 
 DC_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.data_center_building))"
 PV_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.pv_installed_building))"
@@ -314,7 +326,8 @@ COOLING_DEMAND_EXPR = (
 COOLING_ANNUAL_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_annual_cooling_kwh_m2, 20)'
 # Required cooling capacity in kW: generic specific capacity per usage type (W/m²) × area. Placeholder like the demand.
 COOLING_CAPACITY_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_cooling_capacity_w_m2, 0) / 1000'
-HAS_CHILLER_EXPR = 'EXISTS (SELECT 1 FROM core_building."Chillers" c WHERE ST_Intersects(c.geom, b.geom))'
+# Building supplied by a detected chiller (assignment incl. moving it from car parks etc. to the heated neighbour)
+HAS_CHILLER_EXPR = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.cooling_estimate_building))"
 FIND_BUILDINGS_SORT = {
     "cooling_annual": "cooling_annual",
     "cooling_capacity": "cooling_capacity_kw",
@@ -322,6 +335,8 @@ FIND_BUILDINGS_SORT = {
     "kww_heat_demand": "kww_heat_demand",
     "pv_potential": "pv_potential_kwp",
     "pv_installed": "pv_installed_kwp",
+    "cooling_actual": "cooling_actual_kwh",
+    "electricity_cooling": "electricity_cooling_kwh",
     "year_built": "year_built_int",
 }
 
@@ -372,7 +387,7 @@ FIND_BUILDINGS_SCHEMA = {
         },
         "min_cooling_capacity_kw": {"type": "number", "description": "Minimum required cooling capacity in kW (1 MW = 1000), generic placeholder"},
         "max_cooling_capacity_kw": {"type": "number", "description": "Maximum required cooling capacity in kW"},
-        "has_chiller": {"type": "boolean", "description": "true: only buildings with a rooftop chiller detected from aerial imagery; false: only buildings without one"},
+        "has_chiller": {"type": "boolean", "description": "true: only buildings supplied by a cooling unit detected from aerial imagery (with estimated actual cooling and electricity use); false: only buildings without one"},
         "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names); overrides the map view"},
         "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'view' (default): drawn area or visible map. 'berlin': all of Berlin"},
         "near_place": {"type": "string", "description": "Named place in Berlin (e.g. 'Tiergarten'); use with max_distance_m"},
@@ -446,6 +461,8 @@ FIND_TREES_SCHEMA = {
 
 CHILLER_CLASSES = [
     "ACC_Large",
+    "ACC_1_Fan",
+    "ACC_2_Fans",
     "CT_Base_induced",
     "CT_Fan_induced",
     "Hybrid_supposed",
@@ -461,14 +478,14 @@ FIND_CHILLERS_SCHEMA = {
             "enum": CHILLER_CLASSES,
             "description": (
                 "Exact class from the aerial-imagery detection: 'ACC_Large' (large air-cooled "
-                "condenser), 'CT_Base_induced'/'CT_Fan_induced'/'CT_forced'/'CT_forced_difficult' "
+                "condenser), 'ACC_1_Fan'/'ACC_2_Fans' (small air-cooled units with one or two fans), 'CT_Base_induced'/'CT_Fan_induced'/'CT_forced'/'CT_forced_difficult' "
                 "(cooling tower variants), 'Hybrid_supposed' (suspected hybrid unit). Omit to search "
                 "all classes."
             ),
         },
-        "min_confidence": {
+        "min_capacity_kw": {
             "type": "number",
-            "description": "Minimum detection confidence, 0-100",
+            "description": "Minimum estimated cooling capacity of a unit in kW (KIT list, Monte Carlo mean)",
         },
         "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names)"},
         "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'berlin': all of Berlin instead of the visible map"},
@@ -708,6 +725,12 @@ def _execute_find_buildings(
                 pvp.potential_kwp AS pv_potential_kwp,
                 pvi.installed_kwp AS pv_installed_kwp,
                 dcb.names AS data_center,
+                cact.cooling_kwh_mean AS cooling_actual_kwh, cact.cooling_kwh_min AS cooling_actual_min,
+                cact.cooling_kwh_max AS cooling_actual_max,
+                cact.electricity_kwh_mean AS electricity_cooling_kwh, cact.electricity_kwh_min AS electricity_cooling_min,
+                cact.electricity_kwh_max AS electricity_cooling_max,
+                cact.capacity_kw_mean AS chiller_capacity_kw, cact.check_flags AS chiller_check,
+                ncon.length_m AS connection_length_m,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
@@ -738,11 +761,19 @@ def _execute_find_buildings(
                 "pv_potential_kwp": float(row.pv_potential_kwp) if row.pv_potential_kwp is not None else None,
                 "pv_installed_kwp": float(row.pv_installed_kwp) if row.pv_installed_kwp is not None else None,
                 "data_center": row.data_center,
+                **{k: (float(getattr(row, k)) if getattr(row, k) is not None else None)
+                   for k in ("cooling_actual_kwh", "cooling_actual_min", "cooling_actual_max", "electricity_cooling_kwh",
+                             "electricity_cooling_min", "electricity_cooling_max", "chiller_capacity_kw",
+                             "connection_length_m")},
+                "chiller_check": row.chiller_check or None,
             },
         }
         for row in rows
     ]
 
+    if any(f["properties"]["cooling_actual_kwh"] is not None for f in features):
+        sources += ["chillers", "chiller_estimate"]
+        sources = list(dict.fromkeys(sources))
     cooling_values = [f["properties"]["cooling_demand"] for f in features if f["properties"]["cooling_demand"] is not None]
     heating_values = [f["properties"]["heating_demand"] for f in features if f["properties"]["heating_demand"] is not None]
     kww_values = [f["properties"]["kww_heat_demand"] for f in features if f["properties"]["kww_heat_demand"] is not None]
@@ -767,6 +798,15 @@ def _execute_find_buildings(
             field("pv_potential_kwp", "quantitative", "PV-Potenzial Dach", "kWp"),
             field("pv_installed_kwp", "quantitative", "PV installiert (ab 30 kWp / öffentlich)", "kWp"),
             field("data_center", "nominal", "Rechenzentrum"),
+            field("chiller_capacity_kw", "quantitative", "Kälteleistung erkannter Anlagen (geschätzt)", "kW"),
+            field("cooling_actual_kwh", "quantitative", "Ist-Kälte (Schätzung, Mittel)", "kWh/a"),
+            field("cooling_actual_min", "quantitative", "Ist-Kälte min", "kWh/a"),
+            field("cooling_actual_max", "quantitative", "Ist-Kälte max", "kWh/a"),
+            field("electricity_cooling_kwh", "quantitative", "Kältestrom (Schätzung, Mittel)", "kWh/a"),
+            field("electricity_cooling_min", "quantitative", "Kältestrom min", "kWh/a"),
+            field("electricity_cooling_max", "quantitative", "Kältestrom max", "kWh/a"),
+            field("chiller_check", "nominal", "Zuordnung prüfen"),
+            field("connection_length_m", "quantitative", "Anschluss an Straße", "m"),
             field("cooling_annual", "quantitative", "Kältebedarf (Platzhalter)", "kWh/a"),
             field("cooling_capacity_kw", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
         ],
@@ -787,7 +827,8 @@ def _execute_find_buildings(
                "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
                "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
                "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center},
-        notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."],
+        notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."]
+              + ([COOLING_ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
     )
 
     return {
@@ -807,6 +848,13 @@ def _execute_find_buildings(
             "sum_pv_potential_kwp": round(sum(f["properties"]["pv_potential_kwp"] or 0 for f in features)),
             "with_pv_installed": sum(1 for f in features if f["properties"]["pv_installed_kwp"]),
             "data_centers": sorted({f["properties"]["data_center"] for f in features if f["properties"]["data_center"]})[:10],
+            "with_detected_chiller": sum(1 for f in features if f["properties"]["cooling_actual_kwh"] is not None),
+            "sum_cooling_actual_kwh": {k: round(sum(f["properties"][c] or 0 for f in features)) for k, c in
+                                       (("min", "cooling_actual_min"), ("mean", "cooling_actual_kwh"), ("max", "cooling_actual_max"))},
+            "sum_electricity_cooling_kwh": {k: round(sum(f["properties"][c] or 0 for f in features)) for k, c in
+                                            (("min", "electricity_cooling_min"), ("mean", "electricity_cooling_kwh"),
+                                             ("max", "electricity_cooling_max"))},
+            "note_actual_cooling": COOLING_ACTUAL_NOTE,
             "search_area_m2": _buffered_search_area_m2(db, polygon, buffer_distance_m) if polygon else None,
         },
     }
@@ -932,7 +980,8 @@ def _execute_find_chillers(
     bbox: str | None,
     polygon: dict | None = None,
     chiller_class: str | None = None,
-    min_confidence: float | None = None,
+    min_confidence: float | None = None,  # not in the 2026 list any more; ignored
+    min_capacity_kw: float | None = None,
     min_shape_area: float | None = None,
     max_shape_area: float | None = None,
     buffer_distance_m: float | None = None,
@@ -946,7 +995,7 @@ def _execute_find_chillers(
     params: dict = {"limit": limit}
 
     if districts:
-        conditions.append(district_condition(districts, params, "geom"))
+        conditions.append(district_condition(districts, params, 'core_building."Chillers".geom'))
     elif scope == "berlin":
         pass
     elif polygon:
@@ -965,9 +1014,9 @@ def _execute_find_chillers(
     if chiller_class:
         conditions.append("class = :chiller_class")
         params["chiller_class"] = chiller_class
-    if min_confidence is not None:
-        conditions.append("confidence >= :min_confidence")
-        params["min_confidence"] = min_confidence
+    if min_capacity_kw is not None:
+        conditions.append("capacity_kw >= :min_capacity_kw")
+        params["min_capacity_kw"] = min_capacity_kw
     if min_shape_area is not None:
         conditions.append("shape_area >= :min_shape_area")
         params["min_shape_area"] = min_shape_area
@@ -984,11 +1033,11 @@ def _execute_find_chillers(
     rows = db.execute(
         text(
             f"""
-            SELECT objectid, class AS class_name, confidence, shape_area,
+            SELECT objectid, class AS class_name, fans, capacity_kw, capacity_sd_kw, shape_area,
                    ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
             FROM core_building."Chillers"
             {where_clause}
-            ORDER BY shape_area DESC NULLS LAST
+            ORDER BY capacity_kw DESC NULLS LAST, shape_area DESC NULLS LAST
             LIMIT :limit
             """
         ),
@@ -1002,7 +1051,9 @@ def _execute_find_chillers(
             "properties": {
                 "objectid": row.objectid,
                 "class": row.class_name,
-                "confidence": row.confidence,
+                "fans": row.fans,
+                "capacity_kw": row.capacity_kw,
+                "capacity_sd_kw": row.capacity_sd_kw,
                 "shape_area": row.shape_area,
             },
         }
@@ -1014,16 +1065,18 @@ def _execute_find_chillers(
         [
             field("objectid", "id", "Objekt-ID"),
             field("class", "nominal", "Klasse"),
-            field("confidence", "quantitative", "Erkennungssicherheit", "%"),
+            field("fans", "quantitative", "Lüfter", "Stück"),
+            field("capacity_kw", "quantitative", "Kälteleistung (KIT-Schätzung)", "kW"),
+            field("capacity_sd_kw", "quantitative", "Kälteleistung – Standardabweichung", "kW"),
             field("shape_area", "quantitative", "Grundfläche", "m²"),
         ],
-        [{k: (round(float(v), 1) if k in ("confidence", "shape_area") and v is not None else v)
+        [{k: (round(float(v), 1) if k in ("capacity_kw", "capacity_sd_kw", "shape_area") and v is not None else v)
           for k, v in f["properties"].items()} for f in features],
         ["chillers"] + (["districts"] if districts else []),
         ids=[str(f["properties"]["objectid"]) for f in features],
         total=total,
         query={"chiller_class": chiller_class, "districts": districts, "scope": scope},
-        notes=["Die Kälteleistung je Anlage liegt noch nicht vor (kommt vom KIT)."],
+        notes=[CHILLER_CAPACITY_NOTE],
     )
 
     return {

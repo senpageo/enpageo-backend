@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .frames import field, frame
 from .tools import (BUILDING_FUNCTION_PROP, COOLING_ANNUAL_EXPR, COOLING_CAPACITY_EXPR, EXTRA_FILTER_PROPS,
-                    KWW_JOINS, OWNER_EXPR, extra_conditions, extra_sources,
+                    CHILLER_CAPACITY_NOTE, COOLING_ACTUAL_NOTE, KWW_JOINS, OWNER_EXPR, extra_conditions, extra_sources,
                     PROCESS_HEAT_PROP, _build_search_geom_expr, building_function_condition,
                     process_heat_condition, usage_condition)
 
@@ -74,11 +74,33 @@ METRICS = {
     "pv_installed_kwp": ("SUM(pvi.installed_kwp)",
                          field("pv_installed_kwp", "quantitative", "PV installiert (ab 30 kWp / öffentlich)", "kWp"),
                          ["pv_installed"]),
+    "cooling_actual": ("SUM(cact.cooling_kwh_mean)",
+                       field("cooling_actual", "quantitative", "Ist-Kälte erkannter Anlagen (Schätzung, Mittel)", "kWh/a"),
+                       ["chillers", "chiller_estimate"]),
+    "electricity_cooling": ("SUM(cact.electricity_kwh_mean)",
+                            field("electricity_cooling", "quantitative", "Kältestrom (Schätzung, Mittel)", "kWh/a"),
+                            ["chillers", "chiller_estimate"]),
+    "chiller_capacity": ("SUM(cact.capacity_kw_mean)",
+                         field("chiller_capacity", "quantitative", "Kälteleistung erkannter Anlagen (geschätzt)", "kW"),
+                         ["chillers", "chiller_estimate"]),
     "heated_area": ('SUM(pb."Heated area")', field("heated_area", "quantitative", "beheizte Fläche", "m²"),
                     ["building_params"]),
     "building_count": ("COUNT(*)", field("building_count", "quantitative", "Anzahl Gebäude", "Gebäude"),
                        ["footprints"]),
 }
+
+# Metrics from detected chillers carry a min-max band and only count buildings that have such a unit.
+METRIC_BANDS = {
+    "cooling_actual": ("SUM(cact.cooling_kwh_min)", "SUM(cact.cooling_kwh_max)"),
+    "electricity_cooling": ("SUM(cact.electricity_kwh_min)", "SUM(cact.electricity_kwh_max)"),
+    "chiller_capacity": ("SUM(cact.capacity_kw_min)", "SUM(cact.capacity_kw_max)"),
+}
+
+
+def _band_fields(metric: str, metric_field: dict) -> list[dict]:
+    return [field(f"{metric}_min", "quantitative", f"{metric_field['label']} – min", metric_field.get("unit")),
+            field(f"{metric}_max", "quantitative", f"{metric_field['label']} – max", metric_field.get("unit"))]
+
 
 _FILTER_PROPS = {
     "usage_zone_type": {"type": "string", "description": "Restrict to one usage type (same values and group words as find_buildings)."},
@@ -104,7 +126,9 @@ AGGREGATE_BUILDINGS_SCHEMA = {
     "type": "object",
     "properties": {
         "metric": {"type": "string", "enum": list(METRICS),
-                   "description": "pv_potential_kwp (rooftop PV potential, solar cadastre), pv_installed_kwp (registered PV > 30 kWp "
+                   "description": "cooling_actual (estimated actual annual cooling of detected cooling units, kWh, with min/max band), "
+                                  "electricity_cooling (their estimated electricity use, kWh, with band), chiller_capacity "
+                                  "(estimated installed capacity, kW), pv_potential_kwp (rooftop PV potential, solar cadastre), pv_installed_kwp (registered PV > 30 kWp "
                                   "or public sector; small private systems missing), kww_heat_demand (annual kWh, heating + hot water after the KWW catalogue, gross floor area "
                                   "x benchmark), heating_demand (annual kWh, sum), heating_specific (kWh per m² and year, "
                                   "area-weighted), cooling_demand (annual kWh, generic placeholder), cooling_specific "
@@ -233,11 +257,14 @@ MISSING = {
     "measures": ("Wirkungen von Maßnahmen und Sanierungen auf den Kältebedarf", "kommen aus der Simulation im Projekt"),
     "indoor_temperature": ("Innenraumtemperaturen und Überhitzungsstunden", "kommen aus der Simulation im Projekt"),
     "outdoor_heat": ("Angaben zur Wärmebelastung im Außenraum", "die Einbindung der HOSTRADA-Klimadaten ist geplant"),
-    "electricity": ("Strombedarf und Lastgänge", "sind noch nicht im Datenbestand"),
+    "electricity": ("Gesamtstrombedarf und Lastgänge",
+                    "sind noch nicht im Datenbestand; nur der Kältestrom erkannter Anlagen ist grob geschätzt (Metrik electricity_cooling)"),
     "pv": ("PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude",
            "Dachpotenzial (kWp) und Anlagen ab 30 kWp bzw. der öffentlichen Hand sind da (find_buildings), kleine Anlagen nur je PLZ"),
-    "cooling_networks": ("Angaben zu Kältenetzen", "sind noch nicht im Datenbestand"),
-    "chiller_capacity": ("Kälteleistungen je erkannter Anlage", "Standorte und Typen sind da, die Leistung kommt vom KIT"),
+    "cooling_networks": ("Bestehende Kältenetze (Lage, Betreiber, Kapazität)",
+                         "sind noch nicht im Datenbestand; das Straßennetz als mögliche Trasse und die Anschlusslängen je Gebäude sind da"),
+    "chiller_capacity": ("gemessene Kälteleistungen je erkannter Anlage",
+                         "es gibt die KIT-Schätzung je Anlage aus dem Luftbild (Metrik chiller_capacity, mit Spanne; find_chillers je Anlage)"),
     "other_city": ("Gebäudedaten außerhalb Berlins", "Stuttgart und Korbach folgen im Projekt, weitere Städte sind nicht vorgesehen"),
     "ownership": ("Eigentum außer dem Land Berlin (Bund, Private, Gesellschaften, Wohnungsbaugesellschaften) je Gebäude",
                   "landeseigene Grundstücke sind da (Filter owner), andere Eigentümergruppen gibt es nur als Anteil je Planungsraum"),
@@ -312,13 +339,19 @@ _BASE = """
 def _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where_area, where_filter, params,
                   share_of_total, query, notes) -> dict:
     """No grouping: one number for the whole area, optionally with its share of the unfiltered total."""
-    r = db.execute(text(f"SELECT {agg_sql} AS value, COUNT(*) AS n {_BASE} {join} WHERE 1=1 {where_area} {where_filter}"),
+    band = METRIC_BANDS.get(metric)
+    band_sql = f", {band[0]} AS vmin, {band[1]} AS vmax" if band else ""
+    r = db.execute(text(f"SELECT {agg_sql} AS value, COUNT(*) AS n{band_sql} {_BASE} {join} WHERE 1=1 {where_area} {where_filter}"),
                    params).one()
     if r.n == 0:
         return frame("aggregate", [metric_field], [], ["building_params"], total=0, query=query,
                      notes=["Keine Gebäude in diesem Gebiet im Datenbestand. Vorhanden ist derzeit nur Berlin."])
     value = round(float(r.value), 1) if r.value is not None else None
     fields, row = [metric_field], {metric: value}
+    if band:
+        fields += _band_fields(metric, metric_field)
+        row[f"{metric}_min"] = round(float(r.vmin), 1) if r.vmin is not None else None
+        row[f"{metric}_max"] = round(float(r.vmax), 1) if r.vmax is not None else None
     if share_of_total and where_filter:
         area_params = {k: v for k, v in params.items() if not k.startswith(("usage_", "min_year", "max_year", "bf_", "min_pv"))}
         total = db.execute(text(f"SELECT {agg_sql} AS value {_BASE} {join} WHERE 1=1 {where_area}"), area_params).one().value
@@ -347,20 +380,25 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
     where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db, building_function,
                                process_heat, **extra)
     metric_sources = [*metric_sources, *extra_sources(**extra)]
+    band = METRIC_BANDS.get(metric)
+    if band:
+        where_filter += " AND cact.uuid IS NOT NULL"
     query = {**extra, "metric": metric, "group_by": group_by, "districts": districts, "scope": scope, "postcodes": postcodes,
              "usage_zone_type": usage_zone_type, "min_year_built": min_year_built, "max_year_built": max_year_built,
              "top_n": top_n, "share_of_total": share_of_total, "building_function": building_function,
              "process_heat": process_heat}
     if not group_by:
-        notes = (["Kältewerte sind generische Platzhalter je Nutzungsart, keine Simulation."]
+        notes = ([COOLING_ACTUAL_NOTE] if band else
+                 ["Kältewerte sind generische Platzhalter je Nutzungsart, keine Simulation."]
                  if metric.startswith("cooling") else [])
         return _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where_area, where_filter, params,
                              share_of_total, query, notes)
     keys = [GROUPS[g][0] for g in group_by]
     select_keys = ", ".join(f"{k} AS g{n}" for n, k in enumerate(keys))
     group_keys = ", ".join(f"g{n}" for n in range(len(keys)))
+    band_sql = f", {band[0]} AS vmin, {band[1]} AS vmax" if band else ""
     rows = db.execute(text(f"""
-        SELECT {select_keys}, {agg_sql} AS value, COUNT(*) AS n
+        SELECT {select_keys}, {agg_sql} AS value, COUNT(*) AS n{band_sql}
         {_BASE} {join}
         WHERE 1=1 {where_area} {where_filter}
         GROUP BY {group_keys}
@@ -371,6 +409,9 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
     for r in rows:
         row = {g: (getattr(r, f"g{n}") or "unbekannt") for n, g in enumerate(group_by)}
         row[metric] = round(float(r.value), 1) if r.value is not None else None
+        if band:
+            row[f"{metric}_min"] = round(float(r.vmin), 1) if r.vmin is not None else None
+            row[f"{metric}_max"] = round(float(r.vmax), 1) if r.vmax is not None else None
         row["building_count"] = r.n
         out.append(row)
     total_groups = len(out)
@@ -380,13 +421,15 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
         order = [p[0] for p in PERIODS] + ["unbekannt"]
         out.sort(key=lambda r: order.index(r["construction_period"]))
 
-    fields = [GROUPS[g][1] for g in group_by] + [metric_field]
+    fields = [GROUPS[g][1] for g in group_by] + [metric_field] + (_band_fields(metric, metric_field) if band else [])
     if metric != "building_count":
         fields.append(METRICS["building_count"][1])
     sources = ["building_params", *metric_sources] + (["districts"] if (districts or "district" in group_by) else [])
     notes = []
     if not out:
         notes.append("Keine Gebäude in diesem Gebiet im Datenbestand. Vorhanden ist derzeit nur Berlin.")
+    elif band:
+        notes.append(COOLING_ACTUAL_NOTE)
     elif metric.startswith("cooling"):
         notes.append("Kältewerte sind generische Platzhalter je Nutzungsart, keine Simulation.")
     return frame("aggregate", fields, out, sources, hierarchy=group_by if len(group_by) > 1 else None,
@@ -496,7 +539,7 @@ def density_grid(db: Session, bbox: str | None, polygon: dict | None = None, *, 
             "summary_for_llm": {"cells": len(out), "highest": out[0] if out else None, "unit": unit, "metric": label}}
 
 
-CHILLER_GROUPS = {"cooling_tower": "c.class LIKE 'CT_%'", "air_cooled": "c.class = 'ACC_Large'",
+CHILLER_GROUPS = {"cooling_tower": "c.class LIKE 'CT_%'", "air_cooled": "c.class LIKE 'ACC_%'",
                   "hybrid": "c.class = 'Hybrid_supposed'"}
 
 
@@ -534,7 +577,7 @@ def aggregate_chillers(db: Session, bbox: str | None, polygon: dict | None = Non
     metric = field("chiller_count", "quantitative", "Gebäude mit Kühlanlage" if by_building else "Erkannte Kühlanlagen",
                    "Gebäude" if by_building else "Anlagen")
     query = {"chiller_group": chiller_group, "count": count, "group_by": group_by, "districts": districts, "scope": scope}
-    notes = ["Aus Luftbildern erkannt. Die Kälteleistung je Anlage liegt noch nicht vor (kommt vom KIT)."]
+    notes = ["Aus Luftbildern erkannt.", CHILLER_CAPACITY_NOTE]
     if key:
         rows = db.execute(text(f"SELECT {key} AS g, {value} AS v {sql} GROUP BY 1 ORDER BY v DESC"), params).all()
         return frame("aggregate", [field(group_by, "nominal", "Bezirk" if group_by == "district" else "Klasse"), metric],

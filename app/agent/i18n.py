@@ -58,6 +58,31 @@ EXACT = {
     "Rechenzentren aus OpenStreetMap und PeeringDB": "Data centres from OpenStreetMap and PeeringDB",
     "unvollständig": "incomplete",
     "kleine private Anlagen fehlen je Gebäude": "small private systems missing per building",
+    "Kälteleistung erkannter Anlagen (geschätzt)": "Capacity of detected cooling units (estimated)",
+    "Ist-Kälte (Schätzung, Mittel)": "Actual cooling (estimate, mean)",
+    "Ist-Kälte min": "Actual cooling min", "Ist-Kälte max": "Actual cooling max",
+    "Kältestrom (Schätzung, Mittel)": "Cooling electricity (estimate, mean)",
+    "Kältestrom min": "Cooling electricity min", "Kältestrom max": "Cooling electricity max",
+    "Zuordnung prüfen": "Check assignment",
+    "Anschluss an Straße": "Connection to street",
+    "Ist-Kälte erkannter Anlagen (Schätzung, Mittel)": "Actual cooling of detected units (estimate, mean)",
+    "Ist-Kälte erkannter Anlagen (Schätzung, Mittel) – min": "Actual cooling of detected units – min",
+    "Ist-Kälte erkannter Anlagen (Schätzung, Mittel) – max": "Actual cooling of detected units – max",
+    "Kältestrom (Schätzung, Mittel) – min": "Cooling electricity – min",
+    "Kältestrom (Schätzung, Mittel) – max": "Cooling electricity – max",
+    "Kälteleistung erkannter Anlagen (geschätzt) – min": "Capacity of detected units – min",
+    "Kälteleistung erkannter Anlagen (geschätzt) – max": "Capacity of detected units – max",
+    "Ist-Kälte und Kältestrom aus erkannten Kälteanlagen (Schätzung)": "Actual cooling and cooling electricity from detected units (estimate)",
+    "große Unsicherheit, Spanne min–max angeben": "large uncertainty, state the min–max range",
+    "Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitungen je Gebäude": "Berlin street network (Detailnetz) with connection lines per building",
+    "Ist-Kälteverbrauch und Kältestrom sind grobe Schätzungen aus den im Luftbild erkannten Kälteanlagen "
+    "(Kälteleistung je Anlage aus der KIT-Liste mit Spanne, Überdimensionierung, Volllaststunden je Gebäudefunktion, Leistungszahl je "
+    "Anlagentyp). Die Unsicherheit ist groß, deshalb immer die Spanne min–max mit angeben. Anlagen versorgen oft "
+    "Nachbargebäude mit; die Zuordnung ist noch nicht validiert.":
+        "Actual cooling and cooling electricity are rough estimates from cooling units detected in aerial images "
+        "(capacity per unit from the KIT list with range, oversizing, full-load hours per building function, efficiency per unit type). "
+        "Uncertainty is large, so always state the min–max range. Units often also supply neighbouring buildings; "
+        "the assignment is not validated yet.",
     # units
     "Gebäude": "buildings",
     "Anlagen": "units",
@@ -98,6 +123,20 @@ EXACT = {
     "Baumbestand Berlin (Straßen- und Anlagenbäume)": "Berlin tree register (street and park trees)",
     "Rückkühler auf Dächern, aus Luftbildern erkannt": "Rooftop chillers, detected from aerial images",
     "Objekterkennung in Luftbildern, mit Konfidenz je Objekt": "Object detection in aerial images, with confidence per object",
+    "Objekterkennung in Luftbildern (KIT); Kälteleistung je Anlage über Regression und Monte-Carlo-Simulation (Barth et al. 2023)":
+        "Object detection in aerial images (KIT); cooling capacity per unit via regression and Monte Carlo simulation (Barth et al. 2023)",
+    "Aus Luftbildern erkannt.": "Detected from aerial images.",
+    "Kälteleistung je Anlage: Schätzung des KIT aus dem Luftbild (Mittelwert einer "
+    "Monte-Carlo-Simulation, Standardabweichung als Unsicherheit), keine gemessenen Werte.":
+        "Cooling capacity per unit: KIT estimate from aerial images (mean of a Monte Carlo simulation, standard "
+        "deviation as uncertainty), not measured values.",
+    "Lüfter": "Fans",
+    "Stück": "pcs",
+    "Kälteleistung (KIT-Schätzung)": "Cooling capacity (KIT estimate)",
+    "Kälteleistung – Standardabweichung": "Cooling capacity – standard deviation",
+    "gemessene Kälteleistungen je erkannter Anlage": "Measured cooling capacities per detected unit",
+    "es gibt die KIT-Schätzung je Anlage aus dem Luftbild (Metrik chiller_capacity, mit Spanne; find_chillers je Anlage)":
+        "the KIT estimate per unit from aerial images is available (metric chiller_capacity, with range; find_chillers per unit)",
     "Ortsnamen aus OpenStreetMap (Nominatim)": "Place names from OpenStreetMap (Nominatim)",
     "Ortsname wird in Berlin nachgeschlagen; übertragen wird nur der Name":
         "The place name is looked up in Berlin; only the name is transmitted",

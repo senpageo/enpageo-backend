@@ -101,6 +101,30 @@ SOURCES: dict[str, dict] = {
         "license": "ODbL (OpenStreetMap)",
         "estimated": False,
     },
+    "chiller_estimate": {
+        "label": "Ist-Kälte und Kältestrom aus erkannten Kälteanlagen (Schätzung)",
+        "tables": ["core_bldg.chiller_assignment", "core_bldg.cooling_estimate_building",
+                   "core_bldg.chiller_type_param", "core_bldg.cooling_usage_group"],
+        "status": "2026-11-17, Anlagenliste KIT (Mask R-CNN 2026) mit Kälteleistungen",
+        "method": "Kälteleistung je Anlage aus der KIT-Liste (Monte-Carlo-Mittel ± 1 Standardabweichung), geteilt durch Überdimensionierung, mal "
+                  "Volllaststunden je Gebäudefunktion; Strom über Jahres-Leistungszahl je Anlagentyp (Barth, Diss. KIT). "
+                  "Anlagen auf unbeheizten Gebäuden dem größten beheizten Nachbarn zugeordnet, Kraftwerkskühltürme ausgeschlossen",
+        "accuracy": "große Unsicherheit, Spanne min–max angeben",
+        "reference_area": None,
+        "license": None,
+        "estimated": True,
+    },
+    "street_network": {
+        "label": "Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitungen je Gebäude",
+        "tables": ["core_base.street_segment", "core_bldg.network_connection", "core_base.v_street_segment_load"],
+        "status": "2026-11-17 geladen (gdi.berlin.de WFS detailnetz)",
+        "method": "Hauptnetz = Straßen auf Geländeebene ohne Autobahn; Anschluss = kürzeste Linie vom nächsten Abschnitt "
+                  "zur Gebäudekante (Luftlinie, ohne Hindernisse)",
+        "accuracy": None,
+        "reference_area": None,
+        "license": None,
+        "estimated": True,
+    },
     "building_params": {
         "label": "Gebäudeparameter (Nutzung, Baujahr, Flächen)",
         "tables": ["emc.param_building"],
@@ -145,8 +169,8 @@ SOURCES: dict[str, dict] = {
     "chillers": {
         "label": "Rückkühler auf Dächern, aus Luftbildern erkannt",
         "tables": ['core_building."Chillers"'],
-        "status": None,
-        "method": "Objekterkennung in Luftbildern, mit Konfidenz je Objekt",
+        "status": "2026-11-17, KIT Mask R-CNN 2026 (5.891 Anlagen); Vorgängerliste ohne Leistungen: core_building.Chillers_2025",
+        "method": "Objekterkennung in Luftbildern (KIT); Kälteleistung je Anlage über Regression und Monte-Carlo-Simulation (Barth et al. 2023)",
         "accuracy": None,
         "reference_area": None,
         "license": None,

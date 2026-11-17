@@ -313,18 +313,41 @@ def _building_extras(db: Session, uuid: str) -> dict:
             SELECT own.owner_class, own.vermoegensstelle,
                    pvp.potential_kwp, pvp.suitable_area_m2,
                    pvi.installed_kwp, pvi.n_installations, pvi.institutions,
-                   dcb.names AS data_center, dcb.operators AS data_center_operator
+                   dcb.names AS data_center, dcb.operators AS data_center_operator,
+                   ce.n_units, ce.unit_classes, ce.cooling_group_label,
+                   ce.capacity_kw_min, ce.capacity_kw_mean, ce.capacity_kw_max,
+                   ce.cooling_kwh_min, ce.cooling_kwh_mean, ce.cooling_kwh_max,
+                   ce.electricity_kwh_min, ce.electricity_kwh_mean, ce.electricity_kwh_max,
+                   ce.vlh_min, ce.vlh_mean, ce.vlh_max, ce.capacity_w_per_m2_bgf, ce.check_flags,
+                   nc.length_m AS connection_length_m, nc.street_name AS connection_street,
+                   (SELECT count(*) FROM core_bldg.chiller_assignment a
+                     WHERE a.host_uuid = x.uuid AND a.supplied_uuid IS DISTINCT FROM x.uuid) AS units_supplying_elsewhere
             FROM (SELECT :uuid AS uuid) x
             LEFT JOIN core_bldg.building_ownership own ON own.uuid = x.uuid
             LEFT JOIN core_bldg.pv_potential_building pvp ON pvp.uuid = x.uuid
             LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = x.uuid
             LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = x.uuid
+            LEFT JOIN core_bldg.cooling_estimate_building ce ON ce.uuid = x.uuid
+            LEFT JOIN core_bldg.network_connection nc ON nc.uuid = x.uuid
             """
         ),
         {"uuid": uuid},
     ).one()
     num = lambda v: float(v) if v is not None else None  # noqa: E731
+    band = lambda a, b, c: None if b is None else {"min": num(a), "mean": num(b), "max": num(c)}  # noqa: E731
     return {
+        "chiller_units": r.n_units,
+        "chiller_classes": r.unit_classes,
+        "cooling_group": r.cooling_group_label,
+        "chiller_capacity_kw": band(r.capacity_kw_min, r.capacity_kw_mean, r.capacity_kw_max),
+        "cooling_actual_kwh": band(r.cooling_kwh_min, r.cooling_kwh_mean, r.cooling_kwh_max),
+        "electricity_cooling_kwh": band(r.electricity_kwh_min, r.electricity_kwh_mean, r.electricity_kwh_max),
+        "full_load_hours": band(r.vlh_min, r.vlh_mean, r.vlh_max),
+        "chiller_w_per_m2_bgf": num(r.capacity_w_per_m2_bgf),
+        "chiller_check": r.check_flags or None,
+        "chiller_units_supplying_elsewhere": r.units_supplying_elsewhere,
+        "connection_length_m": num(r.connection_length_m),
+        "connection_street": r.connection_street,
         "plot_owner": r.owner_class,
         "plot_owner_detail": r.vermoegensstelle,
         "pv_potential_kwp": num(r.potential_kwp),
@@ -755,7 +778,7 @@ def list_chillers(
         text(
             """
             SELECT
-                objectid, class AS class_name, confidence, shape_area,
+                objectid, class AS class_name, confidence, shape_area, capacity_kw, capacity_sd_kw,
                 ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
             FROM core_building."Chillers"
             WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
@@ -782,6 +805,8 @@ def list_chillers(
                     "class": row.class_name,
                     "confidence": row.confidence,
                     "shape_area": row.shape_area,
+                    "capacity_kw": row.capacity_kw,
+                    "capacity_sd_kw": row.capacity_sd_kw,
                 },
             }
             for row in rows
