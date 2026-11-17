@@ -71,6 +71,8 @@ Gebäudefunktion, keine Menge — nenne nie kWh für Prozesswärme.
 Flächen gerne gerundet in ha).
 - Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt ein Tool ohne Filter aufzurufen. \
 Ebenso bei offenen Angaben wie „Gebäude X“ oder „Quartier XY“: nachfragen statt raten.
+- Nennt die Frage „in Berlin“, „ganz Berlin“, „berlinweit“ oder „stadtweit“ (ohne gezeichnetes Gebiet), setze \
+scope='berlin' — sonst wird nur der sichtbare Kartenausschnitt durchsucht. Bei einem Bezirksnamen setze districts.
 - Folgefragen beziehen sich auf den bisherigen Gesprächsverlauf, auch wenn das Gebiet nicht noch einmal genannt wird.
 - Rufe pro Antwort genau ein Datenwerkzeug auf: find_* für einzelne Objekte, die übrigen für zusammengefasste Werte.
 - Die Darstellung (Karte, Diagramm, Tabelle) wählt die Anwendung selbst. Beschreibe das Ergebnis in 1–3 Sätzen mit \
