@@ -11,7 +11,9 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .frames import field, frame
-from .tools import COOLING_ANNUAL_EXPR, COOLING_CAPACITY_EXPR, _build_search_geom_expr, usage_condition
+from .tools import (BUILDING_FUNCTION_PROP, COOLING_ANNUAL_EXPR, COOLING_CAPACITY_EXPR, KWW_JOINS,
+                    PROCESS_HEAT_PROP, _build_search_geom_expr, building_function_condition,
+                    process_heat_condition, usage_condition)
 
 MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
@@ -39,6 +41,7 @@ PERIOD_EXPR = (
 
 GROUPS = {
     "usage_type": ('pb."PrimaryUsageZoneType"', field("usage_type", "nominal", "Nutzungsart")),
+    "building_function": ("kg.gfk_name", field("building_function", "nominal", "Gebäudefunktion (ALKIS)")),
     "district": ("d.name", field("district", "nominal", "Bezirk")),
     "construction_period": (PERIOD_EXPR, field("construction_period", "ordinal", "Baualtersklasse")),
     "postcode": ("e.postcode::text", field("postcode", "nominal", "Postleitzahl")),
@@ -61,6 +64,9 @@ METRICS = {
     "cooling_capacity": (f"SUM({COOLING_CAPACITY_EXPR})",
                          field("cooling_capacity", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
                          ["cooling_placeholder"]),
+    "kww_heat_demand": ("SUM(kh.heat_dhw_kwh_a)",
+                        field("kww_heat_demand", "quantitative", "Wärmebedarf KWW (Heizung + Warmwasser)", "kWh/a"),
+                        ["kww_heat"]),
     "heated_area": ('SUM(pb."Heated area")', field("heated_area", "quantitative", "beheizte Fläche", "m²"),
                     ["building_params"]),
     "building_count": ("COUNT(*)", field("building_count", "quantitative", "Anzahl Gebäude", "Gebäude"),
@@ -69,6 +75,8 @@ METRICS = {
 
 _FILTER_PROPS = {
     "usage_zone_type": {"type": "string", "description": "Restrict to one usage type (same values and group words as find_buildings)."},
+    "building_function": BUILDING_FUNCTION_PROP,
+    "process_heat": PROCESS_HEAT_PROP,
     "postcodes": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin postcodes; overrides the map view."},
     "min_year_built": {"type": "integer", "description": "Earliest year of construction"},
     "max_year_built": {"type": "integer", "description": "Latest year of construction"},
@@ -88,13 +96,15 @@ AGGREGATE_BUILDINGS_SCHEMA = {
     "type": "object",
     "properties": {
         "metric": {"type": "string", "enum": list(METRICS),
-                   "description": "heating_demand (annual kWh, sum), heating_specific (kWh per m² and year, "
+                   "description": "kww_heat_demand (annual kWh, heating + hot water after the KWW catalogue, gross floor area "
+                                  "x benchmark), heating_demand (annual kWh, sum), heating_specific (kWh per m² and year, "
                                   "area-weighted), cooling_demand (annual kWh, generic placeholder), cooling_specific "
                                   "(kWh per m² and year, placeholder), cooling_capacity (kW, placeholder), heated_area, "
                                   "building_count"},
         "group_by": {"type": "array", "items": {"type": "string", "enum": list(GROUPS)}, "minItems": 0,
                      "maxItems": 2,
                      "description": "Zero, one or two grouping levels, outer first, e.g. ['district', 'usage_type']. "
+                                    "building_function = official ALKIS building function (finer than usage_type). "
                                     "Leave empty for one single number ('wie viele', 'wie hoch insgesamt')."},
         "share_of_total": {"type": "boolean",
                            "description": "With no grouping and a usage or year filter: also return the share of the "
@@ -114,7 +124,7 @@ DENSITY_GRID_SCHEMA = {
                                   "density: where both are high)"},
         "cell_m": {"type": "integer", "description": "Cell size in meters, 100-1000, default 250"},
         "top_n": {"type": "integer", "description": "Keep the n densest cells, default 400, max 1500"},
-        **{k: _FILTER_PROPS[k] for k in ("usage_zone_type", "districts", "scope")},
+        **{k: _FILTER_PROPS[k] for k in ("usage_zone_type", "building_function", "process_heat", "districts", "scope")},
     },
     "required": ["metric"],
 }
@@ -258,10 +268,16 @@ def _area_sql(db_params: dict, bbox: str | None, polygon: dict | None, districts
     return join, " ".join(f"AND {w}" for w in where)
 
 
-def _filter_sql(params: dict, usage_zone_type, min_year_built, max_year_built) -> str:
+def _filter_sql(params: dict, usage_zone_type, min_year_built, max_year_built, db: Session | None = None,
+                building_function: str | None = None, process_heat: bool | None = None) -> str:
     cond = []
     if usage_zone_type:
         cond.append(usage_condition(usage_zone_type, params))
+    if building_function and db is not None:
+        # unknown function name -> no rows (the frame then says so) rather than silently ignoring the filter
+        cond.append(building_function_condition(db, building_function, params) or "FALSE")
+    if process_heat is not None:
+        cond.append(process_heat_condition(process_heat))
     if min_year_built is not None:
         cond.append(f"{_YEAR} >= :min_year_built")
         params["min_year_built"] = min_year_built
@@ -276,7 +292,7 @@ _BASE = """
     LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
     LEFT JOIN emp.emblive e ON e.uuid = b.uuid
     LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
-"""
+""" + KWW_JOINS + "\n"
 
 
 def _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where_area, where_filter, params,
@@ -290,7 +306,7 @@ def _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where
     value = round(float(r.value), 1) if r.value is not None else None
     fields, row = [metric_field], {metric: value}
     if share_of_total and where_filter:
-        area_params = {k: v for k, v in params.items() if not k.startswith(("usage_", "min_year", "max_year"))}
+        area_params = {k: v for k, v in params.items() if not k.startswith(("usage_", "min_year", "max_year", "bf_"))}
         total = db.execute(text(f"SELECT {agg_sql} AS value {_BASE} {join} WHERE 1=1 {where_area}"), area_params).one().value
         if total:
             fields.insert(0, field("share_percent", "quantitative", f"Anteil an {metric_field['label']} gesamt", "%"))
@@ -305,7 +321,8 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
                         group_by: list[str] | None = None, top_n: int | None = None, usage_zone_type: str | None = None,
                         min_year_built: int | None = None, max_year_built: int | None = None,
                         districts: list[str] | None = None, scope: str | None = None,
-                        postcodes: list[str] | None = None, share_of_total: bool | None = None) -> dict:
+                        postcodes: list[str] | None = None, share_of_total: bool | None = None,
+                        building_function: str | None = None, process_heat: bool | None = None) -> dict:
     if metric not in METRICS:
         return {"error": f"unknown metric {metric}"}
     group_by = [g for g in (group_by or []) if g in GROUPS][:2]
@@ -313,10 +330,12 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
 
     params: dict = {}
     join, where_area = _area_sql(params, bbox, polygon, districts, scope, "district" in group_by, postcodes)
-    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built)
+    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db, building_function,
+                               process_heat)
     query = {"metric": metric, "group_by": group_by, "districts": districts, "scope": scope, "postcodes": postcodes,
              "usage_zone_type": usage_zone_type, "min_year_built": min_year_built, "max_year_built": max_year_built,
-             "top_n": top_n, "share_of_total": share_of_total}
+             "top_n": top_n, "share_of_total": share_of_total, "building_function": building_function,
+             "process_heat": process_heat}
     if not group_by:
         notes = (["Kältewerte sind generische Platzhalter je Nutzungsart, keine Simulation."]
                  if metric.startswith("cooling") else [])
@@ -362,10 +381,13 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
 def monthly_profile(db: Session, bbox: str | None, polygon: dict | None = None, *, group_by: str | None = None,
                     top_n: int | None = None, usage_zone_type: str | None = None,
                     min_year_built: int | None = None, max_year_built: int | None = None,
-                    districts: list[str] | None = None, scope: str | None = None) -> dict:
+                    districts: list[str] | None = None, scope: str | None = None,
+                    building_function: str | None = None, process_heat: bool | None = None,
+                    postcodes: list[str] | None = None) -> dict:
     params: dict = {}
-    join, where_area = _area_sql(params, bbox, polygon, districts, scope, group_by == "district")
-    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built)
+    join, where_area = _area_sql(params, bbox, polygon, districts, scope, group_by == "district", postcodes)
+    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db, building_function,
+                               process_heat)
     gkey = GROUPS[group_by][0] if group_by in ("usage_type", "district") else "'gesamt'"
     months = ", ".join(f"SUM({COOLING_ANNUAL_EXPR} * COALESCE(ucp.pct_{m:02d}, 0) / 100) AS m{m}" for m in range(1, 13))
     rows = db.execute(text(f"""
@@ -403,12 +425,13 @@ def monthly_profile(db: Session, bbox: str | None, polygon: dict | None = None, 
 
 def density_grid(db: Session, bbox: str | None, polygon: dict | None = None, *, metric: str = "cooling_demand",
                  cell_m: int | None = None, top_n: int | None = None, usage_zone_type: str | None = None,
-                 districts: list[str] | None = None, scope: str | None = None) -> dict:
+                 districts: list[str] | None = None, scope: str | None = None,
+                 building_function: str | None = None, process_heat: bool | None = None) -> dict:
     cell = max(100, min(int(cell_m or 250), 1000))
     top = max(1, min(int(top_n or 400), 1500))
     params: dict = {"cell": cell, "top": top}
     join, where_area = _area_sql(params, bbox, polygon, districts, scope, False)
-    where_filter = _filter_sql(params, usage_zone_type, None, None)
+    where_filter = _filter_sql(params, usage_zone_type, None, None, db, building_function, process_heat)
     per_ha = 10000.0 / (cell * cell)
     cool = f"SUM({COOLING_ANNUAL_EXPR}) / 1000 * {per_ha}"
     heat = f"SUM(COALESCE(e.cons_c2r2, 0)) / 1000 * {per_ha}"

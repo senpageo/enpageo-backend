@@ -27,6 +27,38 @@ SOURCES: dict[str, dict] = {
         "license": None,
         "estimated": True,
     },
+    "alkis_function": {
+        "label": "ALKIS-Gebäudefunktion (GFK)",
+        "tables": ["emc.building (gfk)", "core_bldg.kww_gfk_mapping"],
+        "status": None,
+        "method": "amtliche Gebäudefunktion aus dem Liegenschaftskataster, vierstelliger Schlüssel",
+        "accuracy": None,
+        "reference_area": None,
+        "license": None,
+        "estimated": False,
+    },
+    "kww_heat": {
+        "label": "Wärmebedarf nach KWW-Technikkatalog Wärmeplanung (08-2026, V1.1), Stand 2025",
+        "tables": ["core_bldg.kww_heat_demand_building", "core_bldg.kww_spec_demand"],
+        "status": "2026-11-16, Tab 53–55",
+        "method": "Bruttogeschossfläche (Grundfläche × oberirdische Geschosse) × Endenergiekennwert Heizung + "
+                  "Warmwasser je Gebäudetyp und Baualtersklasse; Gebäudetyp aus der ALKIS-Gebäudefunktion. "
+                  "Bundesweite Mittelwerte aus Energieausweisen, ohne Prozesswärme.",
+        "accuracy": "Kennwertverfahren, bundesweite Mittelwerte",
+        "reference_area": "Bruttogeschossfläche",
+        "license": None,
+        "estimated": True,
+    },
+    "kww_process_heat": {
+        "label": "Prozesswärme-Relevanz nach KWW-Technikkatalog (Tab 56)",
+        "tables": ["core_bldg.kww_process_heat", "core_bldg.kww_gfk_mapping"],
+        "status": "2026-11-16",
+        "method": "Einstufung je Gebäudefunktion (Ja/Nein), keine Mengenangabe",
+        "accuracy": None,
+        "reference_area": None,
+        "license": None,
+        "estimated": False,
+    },
     "building_params": {
         "label": "Gebäudeparameter (Nutzung, Baujahr, Flächen)",
         "tables": ["emc.param_building"],

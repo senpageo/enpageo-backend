@@ -23,8 +23,8 @@ OLLAMA_CLIENT_KEY = os.getenv("OLLAMA_CLIENT_KEY")
 MAX_TOOL_ROUNDS = 4
 
 SYSTEM_PROMPT = """Du bist ein Assistent für eine interaktive Karte von Berliner Gebäuden und Bäumen (Enpageo).
-Du kannst Gebäude im aktuell sichtbaren Kartenausschnitt nach Kriterien wie Nutzungstyp, Heiz-/Kältebedarf \
-und Baujahr filtern (find_buildings). Der Heizbedarf ist eine gebäudescharfe Jahresschätzung, der \
+Du kannst Gebäude im aktuell sichtbaren Kartenausschnitt nach Kriterien wie Nutzungstyp, Gebäudefunktion (ALKIS), \
+Prozesswärme (KWW), Heiz-/Kältebedarf und Baujahr filtern (find_buildings). Der Heizbedarf ist eine gebäudescharfe Jahresschätzung, der \
 Kältebedarf ein grober Schätzwert je Nutzungstyp (keine Simulation).
 Du kannst außerdem Straßen- und Anlagenbäume (Berlin Baumbestand) nach Art, Kronendurchmesser, Höhe, \
 Bezirk oder Herkunft (Straße/Anlage) filtern (find_trees).
@@ -53,8 +53,15 @@ Straßen) kannst du nicht auflösen — erkläre das kurz statt zu raten.
 100m", "im Radius von 10m", "im Umkreis von 50 Metern", "in 1km Entfernung"), MUSST du diesen Wert immer als \
 buffer_distance_m mitgeben — das ist nicht optional. Rechne dabei immer in Meter um (1km = 1000, 0,5km = 500). \
 Bei einem gezeichneten Polygon oder ganz ohne Zeichnung lass buffer_distance_m weg.
+- Nennt die Nutzerin eine konkrete Gebäudeart (Schule, Kita, Schwimmbad, Krankenhaus, Pflegeheim, Sporthalle, \
+Kirche, Museum, Hotel, Fabrik …), nimm building_function (amtliche ALKIS-Gebäudefunktion) und NICHT usage_zone_type: \
+„Schulen“ sind dann nur Schulen, ohne Kitas und Betreuungsgebäude. usage_zone_type nur für die groben Klassen \
+(Wohngebäude, Büro, Handel, Produktion, sensibel).
 - Gib bei usage_zone_type immer eine der exakten Kategorie-Teilzeichenketten aus der Tool-Beschreibung an, nie \
 eine eigene Umschreibung — im Zweifel wähle die nächstliegende exakte Kategorie statt zu raten.
+- Wärmebedarf nach KWW (kww_heat_demand) ist ein Kennwert-Schätzwert (Bruttogeschossfläche × Kennwert aus dem \
+KWW-Technikkatalog, Heizung + Warmwasser). Prozesswärme (process_heat) ist nur eine Ja/Nein-Einstufung je \
+Gebäudefunktion, keine Menge — nenne nie kWh für Prozesswärme.
 - Enthält das Tool-Ergebnis "search_area_m2", nenne die berechnete Fläche in der Antwort (in m², bei großen \
 Flächen gerne gerundet in ha).
 - Wenn keine Filterkriterien aus der Frage hervorgehen, frage kurz nach, statt ein Tool ohne Filter aufzurufen. \

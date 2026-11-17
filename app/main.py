@@ -259,6 +259,51 @@ def list_buildings(
     }
 
 
+@app.get("/api/building/{uuid}/kww")
+def building_kww(uuid: str, db: Session = Depends(get_db)):
+    """ALKIS building function, heat demand after the KWW catalogue (all scenarios) and process-heat relevance
+    for the info panel. Values come from core_bldg.kww_heat_demand_building (tools/kww/kww_waermebedarf.py)."""
+    rows = db.execute(
+        text(
+            """
+            SELECT b.gfk, kg.gfk_name, kg.mapping_quality, t.label AS kww_label,
+                   kh.scenario, kh.bgf_m2, kh.storeys, kh.storeys_source, kh.age_class,
+                   kh.kwh_per_m2_bgf_a, kh.heat_dhw_kwh_a,
+                   kph.process_heat, kph.data_collection, kph.precondition
+            FROM emc.building b
+            LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
+            LEFT JOIN core_bldg.kww_process_heat kph ON kph.function_label = kg.process_heat_function
+            LEFT JOIN core_bldg.kww_heat_demand_building kh ON kh.uuid = b.uuid
+            LEFT JOIN core_bldg.kww_bldg_type t ON t.kww_type = kh.kww_type
+            WHERE b.uuid = :uuid
+            """
+        ),
+        {"uuid": uuid},
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="building not found")
+    r0 = rows[0]
+    num = lambda v: float(v) if v is not None else None  # noqa: E731
+    by_scenario = {r.scenario: r for r in rows if r.scenario}
+    base = by_scenario.get("2025")
+    return {
+        "uuid": uuid,
+        "gfk": r0.gfk,
+        "building_function": r0.gfk_name,
+        "kww_type": base.kww_label if base else None,
+        "mapping_quality": r0.mapping_quality,
+        "bgf_m2": num(base.bgf_m2) if base else None,
+        "storeys": base.storeys if base else None,
+        "storeys_source": base.storeys_source if base else None,
+        "age_class": base.age_class if base else None,
+        "kwh_per_m2_bgf_a": num(base.kwh_per_m2_bgf_a) if base else None,
+        "heat_demand": {s: num(r.heat_dhw_kwh_a) for s, r in by_scenario.items()},
+        "process_heat": r0.process_heat,
+        "process_heat_data_collection": r0.data_collection,
+        "process_heat_precondition": r0.precondition,
+    }
+
+
 # CityGML objectclass_id -> surface kind. Same numbering the zoning tool's endpoint uses
 # (app/zoning_api.py): 33 is the roof and 34 the wall here, not the other way round.
 SURFACE_KIND_3D = {33: "roof", 34: "wall", 35: "ground"}

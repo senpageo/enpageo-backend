@@ -3,6 +3,7 @@ _to_openai_tools() below derives the OpenAI/Ollama function-calling format from 
 source so both providers share one definition."""
 
 import json
+import re
 from functools import lru_cache
 
 import httpx
@@ -119,6 +120,80 @@ def usage_condition(value: str, params: dict, column: str = 'pb."PrimaryUsageZon
     return "(" + " OR ".join(ors) + ")"
 
 
+# ALKIS building function (Gebäudefunktion, 4-digit GFK code in emc.building.gfk). Finer than the EnergyMap usage
+# types: "Schule" there also holds every Kita and care building. Everyday words map to code lists here; anything
+# else is matched against the official function names (core_bldg.kww_gfk_mapping.gfk_name).
+BUILDING_FUNCTION_ALIASES: dict[str, list[int]] = {
+    "schule": [3021, 3022], "schulgebaeude": [3021, 3022], "grundschule": [3021], "oberschule": [3021],
+    "gymnasium": [3021], "allgemeinbildende schule": [3021], "berufsschule": [3022], "berufsbildende schule": [3022],
+    "kita": [3065], "kitas": [3065], "kindergarten": [3065], "kindergaerten": [3065], "kindertagesstaette": [3065],
+    "krippe": [3065], "kinderkrippe": [3065],
+    "hochschule": [3023], "universitaet": [3023], "uni": [3023], "fachhochschule": [3023],
+    "forschungsinstitut": [3024], "forschung": [2160, 3024],
+    "schwimmbad": [3220, 3221, 3241], "schwimmbaeder": [3220, 3221, 3241], "hallenbad": [3221],
+    "hallenbaeder": [3221], "bad": [3220, 3221, 3241],
+    "krankenhaus": [3050, 3051], "krankenhaeuser": [3050, 3051], "klinik": [3051], "kliniken": [3051],
+    "pflegeheim": [3052, 1022], "seniorenheim": [1022], "altenheim": [1022], "pflegeeinrichtung": [3052, 1022],
+    "sporthalle": [3211], "turnhalle": [3211], "sportgebaeude": [3210, 3211, 3212],
+    "hotel": [2071], "pension": [2071], "jugendherberge": [2072],
+    "wohnheim": [1020, 1021, 1022, 1023, 1024, 1025], "studentenwohnheim": [1024],
+    "kirche": [3041], "moschee": [3046], "synagoge": [3042], "religioese gebaeude": [3040, 3041, 3042, 3043, 3045, 3046],
+    "museum": [3034], "theater": [3032], "oper": [3032], "bibliothek": [3037], "kino": [2092],
+    "rathaus": [3012], "verwaltungsgebaeude": [3010], "polizei": [3071], "feuerwehr": [3072], "gericht": [3015],
+    "botschaft": [3016], "kaserne": [3073], "gefaengnis": [3075], "justizvollzugsanstalt": [3075],
+    "buerogebaeude": [2020], "buero": [2020], "kaufhaus": [2051], "einkaufszentrum": [2052], "laden": [2054],
+    "supermarkt": [2054], "restaurant": [2081], "gaststaette": [2081], "kantine": [2083],
+    "fabrik": [2111], "produktionsgebaeude": [2110, 2111], "werkstatt": [2120], "lagerhalle": [2143],
+    "kuehlhaus": [2141], "tankstelle": [2130], "bahnhof": [3091], "flughafen": [3092],
+    "parkhaus": [2461], "garage": [2463], "tiefgarage": [2465], "heizwerk": [2580], "umspannwerk": [2522],
+    "gewaechshaus": [2740, 2741, 2742, 3272],
+}
+
+
+_GFK_NAMES: list[tuple[int, str]] = []
+
+
+def _gfk_names(db: Session) -> list[tuple[int, str]]:
+    """(gfk, name) for all codes, read once (188 rows, changes only with 03_gfk_kww_mapping.sql)."""
+    if not _GFK_NAMES:
+        _GFK_NAMES.extend((r.gfk, r.gfk_name) for r in db.execute(text("SELECT gfk, gfk_name FROM core_bldg.kww_gfk_mapping")))
+    return _GFK_NAMES
+
+
+def resolve_building_function(db: Session, value: str) -> list[int]:
+    """Everyday word, ALKIS name (part) or 4-digit code(s) -> list of GFK codes; [] if nothing matches."""
+    codes = [int(c) for c in re.findall(r"\b\d{4}\b", value)]
+    if codes:
+        return codes
+    key = _fold_umlauts(value).strip().lower()
+    for k in (key, key.rstrip("n"), key.rstrip("s"), key[:-2] if key.endswith("en") else key):
+        if k in BUILDING_FUNCTION_ALIASES:
+            return BUILDING_FUNCTION_ALIASES[k]
+    names = _gfk_names(db)
+    return [g for g, n in names if key in _fold_umlauts(n).lower()]
+
+
+def building_function_condition(db: Session, value: str, params: dict) -> str | None:
+    codes = resolve_building_function(db, value)
+    if not codes:
+        return None
+    params["bf_codes"] = codes
+    return "b.gfk = ANY(:bf_codes)"
+
+
+# KWW-Technikkatalog (core_bldg.kww_*): Endenergie Heizung + Warmwasser je BGF and process-heat relevance (Tab 56)
+KWW_SCENARIO = "2025"
+KWW_JOINS = f"""
+        LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
+        LEFT JOIN core_bldg.kww_process_heat kph ON kph.function_label = kg.process_heat_function
+        LEFT JOIN core_bldg.kww_heat_demand_building kh ON kh.uuid = b.uuid AND kh.scenario = '{KWW_SCENARIO}'"""
+
+
+def process_heat_condition(value: bool) -> str:
+    """'Ja/Nein' (greenhouses: yes for horticulture, no for agriculture) counts as possible process heat."""
+    return "kph.process_heat IN ('Ja', 'Ja/Nein')" if value else "COALESCE(kph.process_heat, 'Nein') = 'Nein'"
+
+
 def district_condition(names: list[str], params: dict, geom: str = "b.geom") -> str:
     """Spatial filter on named Berlin districts (fast for a few districts, GiST on both sides)."""
     ors = []
@@ -170,12 +245,35 @@ FIND_BUILDINGS_SORT = {
     "cooling_annual": "cooling_annual",
     "cooling_capacity": "cooling_capacity_kw",
     "heating_demand": "heating_demand",
+    "kww_heat_demand": "kww_heat_demand",
     "year_built": "year_built_int",
+}
+
+BUILDING_FUNCTION_PROP = {
+    "type": "string",
+    "description": (
+        "Specific building function from the official ALKIS cadastre (finer than usage_zone_type). PREFER this "
+        "over usage_zone_type whenever the user names a concrete kind of building: 'Schule' (schools only, no "
+        "daycare), 'Kita', 'Hochschule', 'Schwimmbad', 'Hallenbad', 'Krankenhaus', 'Pflegeheim', 'Sporthalle', "
+        "'Hotel', 'Kirche', 'Museum', 'Theater', 'Bibliothek', 'Rathaus', 'Polizei', 'Feuerwehr', 'Kaufhaus', "
+        "'Einkaufszentrum', 'Fabrik', 'Werkstatt', 'Bahnhof', 'Parkhaus', 'Gewächshaus', or any official German "
+        "ALKIS function name or part of it (e.g. 'Seniorenheim', 'Kinderheim'), or 4-digit ALKIS codes like '3021'."
+    ),
+}
+PROCESS_HEAT_PROP = {
+    "type": "boolean",
+    "description": (
+        "true: only buildings whose function has process heat according to the KWW heat-planning catalogue "
+        "(Tab 56: e.g. swimming pools, hospitals, production, care homes); false: only those without. This is a "
+        "relevance flag per building function, not a measured or computed amount."
+    ),
 }
 
 FIND_BUILDINGS_SCHEMA = {
     "type": "object",
     "properties": {
+        "building_function": BUILDING_FUNCTION_PROP,
+        "process_heat": PROCESS_HEAT_PROP,
         "usage_zone_type": {
             "type": "string",
             "description": (
@@ -201,7 +299,7 @@ FIND_BUILDINGS_SCHEMA = {
         "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'view' (default): drawn area or visible map. 'berlin': all of Berlin"},
         "near_place": {"type": "string", "description": "Named place in Berlin (e.g. 'Tiergarten'); use with max_distance_m"},
         "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
-        "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual"},
+        "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue"},
         "min_cooling_demand": {"type": "number", "description": "Minimum July cooling demand in kWh"},
         "max_cooling_demand": {"type": "number", "description": "Maximum July cooling demand in kWh"},
         "min_heating_demand": {"type": "number", "description": "Minimum yearly heating demand in kWh"},
@@ -323,7 +421,10 @@ TOOLS = [
             "Find buildings in the search area (a user-drawn polygon/point/line if one exists, "
             "otherwise the currently visible map area) matching filters, and show them on the map. "
             "Heating demand is a real building-specific annual estimate; cooling demand is a "
-            "generic per-usage-type placeholder (not a simulation result). If a point or line was drawn "
+            "generic per-usage-type placeholder (not a simulation result). Each building also carries its "
+            "ALKIS building function, the heat demand after the KWW catalogue (gross floor area × KWW value, "
+            "heating + hot water, 2025) and whether its function has process heat (KWW). For concrete kinds of "
+            "buildings (schools, daycare, pools, hospitals ...) use building_function. If a point or line was drawn "
             "and the user gave a distance ('im Abstand von 100m', 'im Radius von 10m'), pass it as "
             "buffer_distance_m to search within that distance. Use this whenever the user asks about "
             "specific buildings by usage type, heating/cooling demand, or year built."
@@ -395,6 +496,8 @@ def _execute_find_buildings(
     near_place: str | None = None,
     max_distance_m: float | None = None,
     sort_by: str | None = None,
+    building_function: str | None = None,
+    process_heat: bool | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
@@ -435,6 +538,15 @@ def _execute_find_buildings(
 
     if usage_zone_type:
         conditions.append(usage_condition(usage_zone_type, params))
+    if building_function:
+        cond = building_function_condition(db, building_function, params)
+        if cond is None:
+            return {"error": f"Gebäudefunktion '{building_function}' ist im ALKIS-Katalog nicht bekannt"}
+        conditions.append(cond)
+        sources.append("alkis_function")
+    if process_heat is not None:
+        conditions.append(process_heat_condition(process_heat))
+        sources.append("kww_process_heat")
     if min_cooling_capacity_kw is not None:
         conditions.append(f"({COOLING_CAPACITY_EXPR}) >= :min_cooling_capacity_kw")
         params["min_cooling_capacity_kw"] = min_cooling_capacity_kw
@@ -482,8 +594,11 @@ def _execute_find_buildings(
         LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
         LEFT JOIN emp.emblive el ON el.uuid = b.uuid
         LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
+        {KWW_JOINS}
         WHERE 1=1
-    """
+    """.replace("{KWW_JOINS}", KWW_JOINS)
+    sources += ["alkis_function", "kww_heat", "kww_process_heat"]
+    sources = list(dict.fromkeys(sources))
 
     total = db.execute(text(f"SELECT count(*) AS total {base_from} {where_extra}"), params).one().total
 
@@ -498,6 +613,10 @@ def _execute_find_buildings(
                 ({COOLING_CAPACITY_EXPR}) AS cooling_capacity_kw,
                 el.cons_c2r2 AS heating_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type,
+                b.gfk,
+                kg.gfk_name AS building_function,
+                kh.heat_dhw_kwh_a AS kww_heat_demand,
+                kph.process_heat,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
@@ -519,7 +638,11 @@ def _execute_find_buildings(
                 "cooling_capacity_kw": row.cooling_capacity_kw,
                 "heating_demand": row.heating_demand,
                 "usage_zone_type": row.usage_zone_type,
+                "building_function": row.building_function,
+                "gfk": row.gfk,
                 "year_built": row.year_built,
+                "kww_heat_demand": float(row.kww_heat_demand) if row.kww_heat_demand is not None else None,
+                "process_heat": row.process_heat,
             },
         }
         for row in rows
@@ -527,6 +650,11 @@ def _execute_find_buildings(
 
     cooling_values = [f["properties"]["cooling_demand"] for f in features if f["properties"]["cooling_demand"] is not None]
     heating_values = [f["properties"]["heating_demand"] for f in features if f["properties"]["heating_demand"] is not None]
+    kww_values = [f["properties"]["kww_heat_demand"] for f in features if f["properties"]["kww_heat_demand"] is not None]
+    functions: dict[str, int] = {}
+    for f in features:
+        bf = f["properties"]["building_function"] or "unbekannt"
+        functions[bf] = functions.get(bf, 0) + 1
 
     # Typed result for the presentation chooser (frames.py); geometry stays out of it, the map joins by uuid.
     building_frame = frame(
@@ -534,13 +662,17 @@ def _execute_find_buildings(
         [
             field("bldg_uuid", "id", "Gebäude-ID"),
             field("usage_zone_type", "nominal", "Nutzungsart"),
+            field("building_function", "nominal", "Gebäudefunktion (ALKIS)"),
+            field("gfk", "ordinal", "ALKIS-Code"),
             field("year_built", "ordinal", "Baujahr"),
             field("heating_demand", "quantitative", "Heizwärmebedarf", "kWh/a"),
+            field("kww_heat_demand", "quantitative", "Wärmebedarf KWW (Heizung + Warmwasser)", "kWh/a"),
+            field("process_heat", "nominal", "Prozesswärme (KWW)"),
             field("cooling_annual", "quantitative", "Kältebedarf (Platzhalter)", "kWh/a"),
             field("cooling_capacity_kw", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
         ],
         [
-            {k: (round(float(v), 1) if k in ("heating_demand", "cooling_annual", "cooling_capacity_kw") and v is not None else v)
+            {k: (round(float(v), 1) if k in ("heating_demand", "kww_heat_demand", "cooling_annual", "cooling_capacity_kw") and v is not None else v)
              for k, v in f["properties"].items() if k != "cooling_demand"}
             for f in features
         ],
@@ -553,7 +685,8 @@ def _execute_find_buildings(
                "max_year_built": max_year_built, "buffer_distance_m": buffer_distance_m,
                "min_cooling_capacity_kw": min_cooling_capacity_kw, "max_cooling_capacity_kw": max_cooling_capacity_kw,
                "has_chiller": has_chiller, "districts": districts, "scope": scope, "near_place": near_place,
-               "max_distance_m": max_distance_m, "sort_by": sort_by},
+               "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
+               "process_heat": process_heat},
         notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."],
     )
 
@@ -567,6 +700,9 @@ def _execute_find_buildings(
             "truncated": total > len(features),
             "avg_cooling_demand_kwh": round(sum(cooling_values) / len(cooling_values), 1) if cooling_values else None,
             "avg_heating_demand_kwh": round(sum(heating_values) / len(heating_values), 1) if heating_values else None,
+            "sum_kww_heat_demand_kwh": round(sum(kww_values)) if kww_values else None,
+            "building_functions": dict(sorted(functions.items(), key=lambda kv: -kv[1])[:8]),
+            "with_process_heat": sum(1 for f in features if f["properties"]["process_heat"] in ("Ja", "Ja/Nein")),
             "search_area_m2": _buffered_search_area_m2(db, polygon, buffer_distance_m) if polygon else None,
         },
     }

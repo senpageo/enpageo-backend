@@ -33,6 +33,17 @@ EXACT = {
     "Objekt-ID": "Object ID",
     "Erkennungssicherheit": "Detection confidence",
     "Grundfläche": "Footprint area",
+    "Gebäudefunktion (ALKIS)": "Building function (ALKIS)",
+    "ALKIS-Code": "ALKIS code",
+    "Wärmebedarf KWW (Heizung + Warmwasser)": "Heat demand KWW (heating + hot water)",
+    "Prozesswärme (KWW)": "Process heat (KWW)",
+    "Ja": "Yes", "Nein": "No", "Ja/Nein": "Yes/No",
+    "ALKIS-Gebäudefunktion (GFK)": "ALKIS building function (GFK)",
+    "Wärmebedarf nach KWW-Technikkatalog Wärmeplanung (08-2026, V1.1), Stand 2025":
+        "Heat demand after the KWW heat-planning technology catalogue (08-2026, v1.1), 2025",
+    "Prozesswärme-Relevanz nach KWW-Technikkatalog (Tab 56)": "Process-heat relevance after the KWW catalogue (Tab 56)",
+    "Bruttogeschossfläche": "Gross floor area",
+    "Kennwertverfahren, bundesweite Mittelwerte": "Benchmark method, national averages",
     # units
     "Gebäude": "buildings",
     "Anlagen": "units",
@@ -161,7 +172,7 @@ def tr(s):
 
 
 # row fields that hold German category values (not names, numbers or ids)
-_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label"}
+_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat"}
 
 
 def localize(fr: dict | None, lang: str | None) -> dict | None:
