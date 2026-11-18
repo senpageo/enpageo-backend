@@ -6,11 +6,18 @@ je Gebäude.
   core_base.v_street_segment_load   Sicht: je Abschnitt angeschlossene Gebäude, Anschlusslängen, Wärme (KWW),
                                     Kälte (Platzhalter) und Ist-Kälte (erkannte Anlagen), Liniendichten
 
-Hauptnetz = Straßenabschnitte auf Geländeebene (verkehrsebene = 0) ohne Autobahnen. Angeschlossen werden alle
-beheizten Gebäude (core_bldg.kww_gfk_mapping.heated) und alle Gebäude mit erkannter Kälteanlage.
+  core_base.v_potential_network     Sicht: potenzielle Netzstruktur (Hauptleitungen + Anschlussleitungen)
 
-Aufruf: python load_strassennetz.py [--dsn ...] [--max-dist 150]
-        python load_strassennetz.py --only-missing     (nach neuer Kälteanlagenliste, Minuten statt Stunden)
+Es geht nicht um bestehende Netze und nicht um die erkannten Kälteanlagen, sondern um eine potenzielle Netzstruktur
+für die ganze Stadt: sobald Wärme- und Kältebedarf je Gebäude vorliegen, ergeben sich daraus Liniendichten, die zeigen,
+wo Wärme- oder Kältenetze sinnvoll wären.
+
+Hauptnetz = Straßenabschnitte auf Geländeebene (verkehrsebene = 0) ohne Autobahnen. Angeschlossen werden alle
+beheizten Gebäude in Berlin (core_bldg.kww_gfk_mapping.heated, emc.building.displayed, Lage in emc.district),
+jeweils an den nächsten Hauptnetz-Abschnitt, ohne Längengrenze (> --max-dist: beyond_max_dist).
+
+Aufruf: python load_strassennetz.py [--dsn ...] [--max-dist 150]   (Straßennetz neu laden + alle Anschlüsse)
+        python load_strassennetz.py --sync                        (Anschlüsse auf den Gebäudebestand abgleichen)
 """
 from __future__ import annotations
 
@@ -50,48 +57,81 @@ def dsn_from_env_file() -> str:
     raise SystemExit("DATABASE_URL nicht in .env gefunden, bitte --dsn angeben")
 
 
-def add_missing_connections(dsn: str, max_dist: float):
-    """Anschlussleitungen für Gebäude ergänzen, die neu beheizt gelten oder neu eine erkannte Kälteanlage tragen.
-    Die volle Berechnung dauert ~5 h; nach einem Update der Anlagenliste reicht das hier."""
+BUILDINGS = """
+    SELECT b.uuid, b.geom FROM emc.building b
+    JOIN core_bldg.kww_gfk_mapping k ON k.gfk = b.gfk AND k.heated
+    WHERE b.displayed
+      AND EXISTS (SELECT 1 FROM emc.district d WHERE ST_Intersects(d.geom, ST_PointOnSurface(b.geom)))"""
+
+
+def sync_connections(dsn: str, max_dist: float):
+    """Anschlussleitungen auf den Gebäudebestand abgleichen: alle beheizten Gebäude in Berlin (ALKIS-Gebäudefunktion,
+    core_bldg.kww_gfk_mapping.heated) bekommen die kürzeste Leitung zum nächsten Hauptnetz-Abschnitt, ohne Längengrenze;
+    länger als max_dist -> beyond_max_dist. Gebäude, die nicht mehr dazugehören, fallen heraus. Erkannte Kälteanlagen
+    spielen keine Rolle: das Netz ist eine potenzielle Struktur für spätere Wärme- und Kälteliniendichten."""
     t0 = time.perf_counter()
     with psycopg.connect(dsn) as con, con.cursor() as cur:
-        cur.execute(f"""
-            INSERT INTO core_bldg.network_connection
-            WITH bl AS (
-                SELECT b.uuid, b.geom FROM emc.building b
-                JOIN core_bldg.kww_gfk_mapping k ON k.gfk = b.gfk
-                WHERE k.heated
-                UNION
-                SELECT b.uuid, b.geom FROM emc.building b
-                WHERE EXISTS (SELECT 1 FROM core_building."Chillers" c WHERE ST_Intersects(c.geom, b.geom))
-                UNION
-                SELECT b.uuid, b.geom FROM emc.building b
-                WHERE b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.cooling_estimate_building))
-            )
+        cur.execute("ALTER TABLE core_bldg.network_connection ADD COLUMN IF NOT EXISTS beyond_max_dist boolean")
+        cur.execute(f"CREATE TEMP TABLE sel AS {BUILDINGS}")
+        cur.execute("ALTER TABLE sel ADD PRIMARY KEY (uuid)")
+        cur.execute("ANALYZE sel")
+        cur.execute("DELETE FROM core_bldg.network_connection n WHERE NOT EXISTS (SELECT 1 FROM sel WHERE sel.uuid = n.uuid)")
+        removed = cur.rowcount
+        cur.execute("""
+            INSERT INTO core_bldg.network_connection (uuid, segment_id, street_name, length_m, geom)
             SELECT bl.uuid, s.id, s.street_name,
                    round(ST_Length(ST_ShortestLine(s.geom, bl.geom))::numeric, 1),
                    ST_ShortestLine(s.geom, bl.geom)::geometry(LineString, 25833)
-            FROM bl
+            FROM sel bl
             CROSS JOIN LATERAL (
                 SELECT s.id, s.street_name, s.geom FROM core_base.street_segment s
-                WHERE s.is_main_network AND ST_DWithin(s.geom, bl.geom, {max_dist})
-                ORDER BY s.geom <-> bl.geom LIMIT 1) s
+                WHERE s.is_main_network ORDER BY s.geom <-> bl.geom LIMIT 1) s
             WHERE NOT EXISTS (SELECT 1 FROM core_bldg.network_connection n WHERE n.uuid = bl.uuid)""")
-        n = cur.rowcount
+        added = cur.rowcount
+        cur.execute("UPDATE core_bldg.network_connection SET beyond_max_dist = length_m > %s "
+                    "WHERE beyond_max_dist IS DISTINCT FROM (length_m > %s)", (max_dist, max_dist))
+        cur.execute(f"""
+            COMMENT ON TABLE core_bldg.network_connection IS
+              'Potenzielle Anschlussleitung je beheiztem Gebäude in Berlin: kürzeste Linie vom nächsten Hauptnetz-Abschnitt '
+              '(core_base.street_segment, is_main_network) zur Gebäudekante, ohne Längengrenze (beyond_max_dist: länger als '
+              '{max_dist:.0f} m). Luftlinie ohne Hindernisse (Nachbargebäude, Gleise, Gewässer). Unabhängig von bestehenden '
+              'Netzen und erkannten Kälteanlagen – Grundlage für Wärme- und Kälteliniendichten.'""")
+        cur.execute("""
+            CREATE OR REPLACE VIEW core_base.v_potential_network AS
+            SELECT 'hauptleitung'::text AS kind, s.id AS segment_id, NULL::text AS uuid, s.street_name, s.district,
+                   s.length_m, n.n_buildings, false AS beyond_max_dist, s.geom
+            FROM core_base.street_segment s
+            JOIN (SELECT segment_id, count(*) AS n_buildings FROM core_bldg.network_connection GROUP BY 1) n
+              ON n.segment_id = s.id
+            UNION ALL
+            SELECT 'anschlussleitung', c.segment_id, c.uuid::text, c.street_name, NULL, c.length_m, 1,
+                   c.beyond_max_dist, c.geom
+            FROM core_bldg.network_connection c""")
+        cur.execute("""
+            COMMENT ON VIEW core_base.v_potential_network IS
+              'Potenzielle Wärme-/Kältenetzstruktur Berlin: Hauptleitungen = Hauptnetz-Straßenabschnitte, an denen mindestens '
+              'ein beheiztes Gebäude anschließt; Anschlussleitungen je Gebäude (core_bldg.network_connection). Zeigt, wo Netze '
+              'möglich wären, nicht bestehende Netze.'""")
+        cur.execute("""SELECT count(*), count(*) FILTER (WHERE beyond_max_dist), round(avg(length_m), 1),
+                              count(DISTINCT segment_id) FROM core_bldg.network_connection""")
+        n, far, avg, segs = cur.fetchone()
         con.commit()
-    print(f"{n} Anschlussleitungen ergänzt ({time.perf_counter() - t0:.0f} s)")
+    print(f"Anschlüsse: {n} Gebäude (+{added}, -{removed}), davon {far} länger als {max_dist:.0f} m, "
+          f"mittlere Länge {avg} m, {segs} Hauptleitungsabschnitte ({time.perf_counter() - t0:.0f} s)")
 
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--dsn")
-    ap.add_argument("--max-dist", type=float, default=150, help="maximale Anschlusslänge in m")
-    ap.add_argument("--only-missing", action="store_true",
-                    help="Straßennetz behalten, nur fehlende Anschlüsse (z. B. nach neuer Kälteanlagenliste) ergänzen")
+    ap.add_argument("--max-dist", type=float, default=150,
+                    help="Anschlüsse länger als das (m) werden als beyond_max_dist markiert, nicht weggelassen")
+    ap.add_argument("--sync", "--only-missing", dest="only_missing", action="store_true",
+                    help="Straßennetz behalten, Anschlüsse nur auf den Gebäudebestand abgleichen (Minuten)")
     a = ap.parse_args()
+    dsn = a.dsn or dsn_from_env_file()
     if a.only_missing:
-        add_missing_connections(a.dsn or dsn_from_env_file(), a.max_dist)
+        sync_connections(dsn, a.max_dist)
         return
     rows = []
     for f in features("detailnetz:c_strassenabschnitte"):
@@ -100,7 +140,7 @@ def main():
                      p.get("strassenklasse2"), p.get("verkehrsebene"), p.get("bezirk"), p.get("laenge"),
                      json.dumps(f["geometry"])))
     t0 = time.perf_counter()
-    with psycopg.connect(a.dsn or dsn_from_env_file()) as con, con.cursor() as cur:
+    with psycopg.connect(dsn) as con, con.cursor() as cur:
         cur.execute("""
             CREATE SCHEMA IF NOT EXISTS core_base;
             DROP VIEW IF EXISTS core_base.v_street_segment_load;
@@ -127,32 +167,12 @@ def main():
                     "GROUP BY 1,2,3,4 ORDER BY 5 DESC LIMIT 15")
         for r in cur.fetchall():
             print("  ", r)
-        print("Anschlussleitungen werden berechnet …")
-        cur.execute(f"""
-            CREATE TABLE core_bldg.network_connection AS
-            WITH bl AS (
-                SELECT b.uuid, b.geom FROM emc.building b
-                JOIN core_bldg.kww_gfk_mapping k ON k.gfk = b.gfk
-                WHERE k.heated
-                UNION
-                SELECT b.uuid, b.geom FROM emc.building b
-                WHERE EXISTS (SELECT 1 FROM core_building."Chillers" c WHERE ST_Intersects(c.geom, b.geom))
-            )
-            SELECT bl.uuid, s.id AS segment_id, s.street_name,
-                   round(ST_Length(ST_ShortestLine(s.geom, bl.geom))::numeric, 1) AS length_m,
-                   ST_ShortestLine(s.geom, bl.geom)::geometry(LineString, 25833) AS geom
-            FROM bl
-            CROSS JOIN LATERAL (
-                SELECT s.id, s.street_name, s.geom FROM core_base.street_segment s
-                WHERE s.is_main_network AND ST_DWithin(s.geom, bl.geom, {a.max_dist})
-                ORDER BY s.geom <-> bl.geom LIMIT 1) s;
-            ALTER TABLE core_bldg.network_connection ADD PRIMARY KEY (uuid);
+        cur.execute("""
+            CREATE TABLE core_bldg.network_connection (
+                uuid text PRIMARY KEY, segment_id int, street_name text, length_m numeric, beyond_max_dist boolean,
+                geom geometry(LineString, 25833));
             CREATE INDEX ON core_bldg.network_connection (segment_id);
-            CREATE INDEX ON core_bldg.network_connection USING gist (geom);
-            COMMENT ON TABLE core_bldg.network_connection IS
-              'Kürzeste Anschlussleitung je Gebäude vom nächsten Hauptnetz-Straßenabschnitt (core_base.street_segment, '
-              'is_main_network) bis zur Gebäudekante. Beheizte Gebäude und Gebäude mit erkannter Kälteanlage, max. {a.max_dist:.0f} m. '
-              'Luftlinie ohne Hindernisse (Nachbargebäude, Gleise, Gewässer).';""")
+            CREATE INDEX ON core_bldg.network_connection USING gist (geom);""")
         cur.execute("""
             CREATE VIEW core_base.v_street_segment_load AS
             SELECT s.id, s.street_name, s.district, s.length_m, s.geom,
@@ -175,12 +195,9 @@ def main():
             COMMENT ON VIEW core_base.v_street_segment_load IS
               'Je Hauptnetz-Straßenabschnitt: angeschlossene Gebäude, Anschlusslängen, Wärme (KWW) und Ist-Kälte '
               '(erkannte Anlagen, mit Spanne) sowie Liniendichten in MWh je Trassenmeter (Abschnitt + Anschlüsse) und Jahr.';""")
-        cur.execute("SELECT count(*), round(avg(length_m),1), percentile_cont(0.95) WITHIN GROUP (ORDER BY length_m) "
-                    "FROM core_bldg.network_connection")
-        n, avg, p95 = cur.fetchone()
-        print(f"Anschlüsse: {n} Gebäude, mittlere Länge {avg} m, 95-%-Wert {p95:.0f} m ({time.perf_counter() - t0:.0f} s)")
         con.commit()
-
+    print(f"Straßennetz geladen ({time.perf_counter() - t0:.0f} s), Anschlussleitungen werden berechnet …")
+    sync_connections(dsn, a.max_dist)
 
 if __name__ == "__main__":
     main()

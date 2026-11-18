@@ -573,7 +573,7 @@ def aggregate_chillers(db: Session, bbox: str | None, polygon: dict | None = Non
     value = "COUNT(DISTINCT b.uuid)" if by_building else "COUNT(*)"
     key = {"district": "d.name", "chiller_class": "c.class"}.get(group_by or "")
     where_sql = "WHERE " + " AND ".join(where) if where else ""
-    sql = f'FROM core_building."Chillers" c {join} {where_sql}'
+    sql = f'FROM core_bldg."Chillers" c {join} {where_sql}'
     metric = field("chiller_count", "quantitative", "Gebäude mit Kühlanlage" if by_building else "Erkannte Kühlanlagen",
                    "Gebäude" if by_building else "Anlagen")
     query = {"chiller_group": chiller_group, "count": count, "group_by": group_by, "districts": districts, "scope": scope}

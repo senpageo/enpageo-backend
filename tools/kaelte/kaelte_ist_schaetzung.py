@@ -15,7 +15,7 @@ Steht die Anlage auf einem unbeheizten Gebäude (Parkhaus, Garage, Umformer …)
 Kältebedarf aus der BGF zu prüfen.
 
 Parametertabellen werden nur angelegt bzw. ergänzt, nie überschrieben – Werte dürfen von Hand angepasst werden.
-Aufruf (nach jedem Update der Anlagenliste core_building."Chillers"): python kaelte_ist_schaetzung.py [--dsn ...]
+Aufruf (nach jedem Update der Anlagenliste core_bldg."Chillers"): python kaelte_ist_schaetzung.py [--dsn ...]
 """
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ DROP TABLE IF EXISTS core_bldg.chiller_assignment;
 CREATE TEMP TABLE ch AS
 SELECT c.objectid, c.class, c.confidence, c.shape_area, c.geom, {capacity_col} AS capacity_kw_given,
        {capacity_sd_col} AS capacity_sd_given
-FROM core_building."Chillers" c;
+FROM core_bldg."Chillers" c;
 
 CREATE TEMP TABLE host AS
 SELECT DISTINCT ON (ch.objectid) ch.objectid, b.uuid, b.gfk, 'ueberdeckung'::text AS match_method
@@ -268,7 +268,7 @@ def main():
         cur.execute("UPDATE core_bldg.chiller_type_param SET kw_per_m2_min = 20, kw_per_m2_mean = 30, kw_per_m2_max = 40 "
                     "WHERE class IN ('ACC_Large', 'Hybrid_supposed') AND kw_per_m2_mean = 45")
         # Use the capacity of the chiller list when present (KIT 2026: capacity_kw + capacity_sd_kw).
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'core_building' "
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'core_bldg' "
                     "AND table_name = 'Chillers'")
         cols = {r[0] for r in cur.fetchall()}
         col = next((c for c in ("capacity_kw", "kaelteleistung_kw") if c in cols), None)

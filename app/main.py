@@ -780,7 +780,7 @@ def list_chillers(
             SELECT
                 objectid, class AS class_name, confidence, shape_area, capacity_kw, capacity_sd_kw,
                 ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
-            FROM core_building."Chillers"
+            FROM core_bldg."Chillers"
             WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
             LIMIT :limit
             """

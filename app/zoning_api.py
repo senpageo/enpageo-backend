@@ -472,7 +472,7 @@ def _shift(coords, base: float) -> None:
 def chillers(db: Session = Depends(get_db)):
     """Rooftop cooling equipment detected from aerial imagery -- the validation data.
 
-    Not our own product: it comes from `core_building."Chillers"`, 5.436 outlines for
+    Not our own product: it comes from `core_bldg."Chillers"`, 5.436 outlines for
     Berlin, of which 643 sit on buildings in this work area. Drawn on the map because
     a zoning prediction for a building that demonstrably has a chiller on its roof is
     worth more than one for a building that may not be cooled at all.
@@ -486,7 +486,7 @@ def chillers(db: Session = Depends(get_db)):
         SELECT ch.class AS cls, round(ch.shape_area::numeric, 1) AS area,
                round(ch.confidence::numeric, 1) AS conf,
                ST_AsGeoJSON(ST_Transform(ch.geom, 4326), 7) AS geom
-        FROM core_building."Chillers" ch
+        FROM core_bldg."Chillers" ch
         JOIN zoning.area a ON ST_Intersects(ch.geom, a.geom)
     """)).all()
     return _fc(rows, props=lambda r: {

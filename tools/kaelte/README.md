@@ -3,12 +3,11 @@
 ## Ablauf bei einer neuen Anlagenliste
 
 ```
-python load_chillers.py <KIT-Liste.json>                  # Esri-JSON, EPSG:25833 -> core_building."Chillers"
+python load_chillers.py <KIT-Liste.json>                  # Esri-JSON, EPSG:25833 -> core_bldg."Chillers"
 python kaelte_ist_schaetzung.py                           # Zuordnung + Ist-Kälte/-Strom (Sekunden)
-python ../kaeltenetz/load_strassennetz.py --only-missing  # Anschlussleitungen für neue Anlagengebäude
 ```
 
-`load_chillers.py` hebt die Vorgängerliste beim ersten Lauf als `core_building."Chillers_2025"` auf.
+`load_chillers.py` ersetzt die bisherige Liste (mit `--keep-as <Name>` wird sie stattdessen aufgehoben).
 Die Liste vom 17.11.2026 (`Berlin_MRCNN2026_2_Chillers_CoolingCapacities_1.json`, 5.891 Anlagen) bringt je Anlage
 `capacity_regression_kw` (Regression), `capacity_kw` (Monte-Carlo-Mittel) und `capacity_sd_kw` (Monte-Carlo-Standardabweichung),
 aber keine Erkennungssicherheit mehr (`confidence` = NULL).
@@ -26,6 +25,8 @@ Band max              = P_max / f_min × VLH_max,   Strom max = E_th,max / EER_m
 Nutzungsgruppe für VLH: ALKIS-Gebäudefunktion des versorgten Gebäudes (`core_bldg.cooling_gfk_group`),
 Rechenzentren (OSM/PeeringDB) überschreiben. Sichten auf das Ergebnis (`core_base.v_street_segment_load`) werden beim
 Neulauf automatisch neu angelegt.
+
+Die potenzielle Netzstruktur (`../kaeltenetz/load_strassennetz.py`) hängt nicht an den erkannten Anlagen.
 
 ## Zuordnung Anlage → Gebäude (`core_bldg.chiller_assignment`)
 

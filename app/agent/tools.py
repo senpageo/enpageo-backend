@@ -995,7 +995,7 @@ def _execute_find_chillers(
     params: dict = {"limit": limit}
 
     if districts:
-        conditions.append(district_condition(districts, params, 'core_building."Chillers".geom'))
+        conditions.append(district_condition(districts, params, 'core_bldg."Chillers".geom'))
     elif scope == "berlin":
         pass
     elif polygon:
@@ -1027,7 +1027,7 @@ def _execute_find_chillers(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     total = db.execute(
-        text(f'SELECT count(*) AS total FROM core_building."Chillers" {where_clause}'), params
+        text(f'SELECT count(*) AS total FROM core_bldg."Chillers" {where_clause}'), params
     ).one().total
 
     rows = db.execute(
@@ -1035,7 +1035,7 @@ def _execute_find_chillers(
             f"""
             SELECT objectid, class AS class_name, fans, capacity_kw, capacity_sd_kw, shape_area,
                    ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
-            FROM core_building."Chillers"
+            FROM core_bldg."Chillers"
             {where_clause}
             ORDER BY capacity_kw DESC NULLS LAST, shape_area DESC NULLS LAST
             LIMIT :limit

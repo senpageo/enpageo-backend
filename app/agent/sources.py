@@ -115,8 +115,9 @@ SOURCES: dict[str, dict] = {
         "estimated": True,
     },
     "street_network": {
-        "label": "Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitungen je Gebäude",
-        "tables": ["core_base.street_segment", "core_bldg.network_connection", "core_base.v_street_segment_load"],
+        "label": "Potenzielle Netzstruktur: Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitung je beheiztem Gebäude",
+        "tables": ["core_base.street_segment", "core_bldg.network_connection", "core_base.v_street_segment_load",
+                   "core_base.v_potential_network"],
         "status": "2026-11-17 geladen (gdi.berlin.de WFS detailnetz)",
         "method": "Hauptnetz = Straßen auf Geländeebene ohne Autobahn; Anschluss = kürzeste Linie vom nächsten Abschnitt "
                   "zur Gebäudekante (Luftlinie, ohne Hindernisse)",
@@ -168,8 +169,8 @@ SOURCES: dict[str, dict] = {
     },
     "chillers": {
         "label": "Rückkühler auf Dächern, aus Luftbildern erkannt",
-        "tables": ['core_building."Chillers"'],
-        "status": "2026-11-17, KIT Mask R-CNN 2026 (5.891 Anlagen); Vorgängerliste ohne Leistungen: core_building.Chillers_2025",
+        "tables": ['core_bldg."Chillers"'],
+        "status": "2026-11-17, KIT Mask R-CNN 2026 (5.891 Anlagen)",
         "method": "Objekterkennung in Luftbildern (KIT); Kälteleistung je Anlage über Regression und Monte-Carlo-Simulation (Barth et al. 2023)",
         "accuracy": None,
         "reference_area": None,

@@ -74,7 +74,7 @@ EXACT = {
     "Kälteleistung erkannter Anlagen (geschätzt) – max": "Capacity of detected units – max",
     "Ist-Kälte und Kältestrom aus erkannten Kälteanlagen (Schätzung)": "Actual cooling and cooling electricity from detected units (estimate)",
     "große Unsicherheit, Spanne min–max angeben": "large uncertainty, state the min–max range",
-    "Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitungen je Gebäude": "Berlin street network (Detailnetz) with connection lines per building",
+    "Potenzielle Netzstruktur: Detailnetz Berlin (Straßenabschnitte) mit Anschlussleitung je beheiztem Gebäude": "Potential network structure: Berlin street network (Detailnetz) with a connection line per heated building",
     "Ist-Kälteverbrauch und Kältestrom sind grobe Schätzungen aus den im Luftbild erkannten Kälteanlagen "
     "(Kälteleistung je Anlage aus der KIT-Liste mit Spanne, Überdimensionierung, Volllaststunden je Gebäudefunktion, Leistungszahl je "
     "Anlagentyp). Die Unsicherheit ist groß, deshalb immer die Spanne min–max mit angeben. Anlagen versorgen oft "
