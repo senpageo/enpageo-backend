@@ -304,10 +304,19 @@ def _resolve_place_cached(name: str) -> dict | None:
         hits = r.json() if r.status_code == 200 else []
     except httpx.HTTPError:
         return None
+    # stops and platforms named after a site ("Charité - Campus Mitte" bus stop) are not the site itself
+    hits = [h for h in hits if h.get("category") not in ("highway", "railway", "public_transport")]
+    areas = [h for h in hits if h.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")]
+    words = name.split()
+    if not areas and len(words) > 1:
+        # "charité campus mitte" has no area of its own, "charité" does: retry with the last word dropped
+        shorter = _resolve_place_cached(" ".join(words[:-1]))
+        if shorter and shorter["geometry"].get("type") in ("Polygon", "MultiPolygon"):
+            return shorter
     if not hits:
         return None
     # prefer an area (a campus, an airport) over a point or a street of the same name
-    hit = next((h for h in hits if h.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), hits[0])
+    hit = areas[0] if areas else hits[0]
     return {"geometry": hit["geojson"], "label": hit.get("display_name", name)}
 
 
