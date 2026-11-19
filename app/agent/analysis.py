@@ -659,14 +659,16 @@ def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, 
     # house connection lines of the shown sections: a network only pays off with the buildings connected
     n_conn = 0
     if seg_rank:
+        # house connections are drawn thin and neutral, not classed: a single building's demand over a few metres
+        # of pipe is no line density of a network section (computed that way it would mostly exceed the main lines)
         conns = db.execute(text("""
             SELECT c.segment_id, c.length_m, ST_AsGeoJSON(ST_Transform(c.geom, 4326), 6) AS geom
             FROM core_bldg.network_connection c WHERE c.segment_id = ANY(:ids) LIMIT 20000"""),
                            {"ids": list(seg_rank)}).all()
         for c in conns:
-            rank, v = seg_rank[c.segment_id]
+            rank, _ = seg_rank[c.segment_id]
             features.append({"type": "Feature", "geometry": json.loads(c.geom),
-                             "properties": {"kind": "anschluss", "rank": rank, "value": v, "carrier": carrier,
+                             "properties": {"kind": "anschluss", "rank": rank, "carrier": carrier,
                                             "length_m": float(c.length_m)}})
         n_conn = len(conns)
     total = int(rows[0].total) if rows else 0
