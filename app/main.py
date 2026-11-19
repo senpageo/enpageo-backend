@@ -693,6 +693,8 @@ def list_buildings_3d(
 # have both, r = 0.75: crown ≈ 0.53 × height + 0.5 m), 5 m if the height is missing too. Flagged in the
 # response as krone_geschaetzt.
 CROWN_DIAMETER_SQL = "COALESCE(NULLIF(kronedurch, 0), 0.53 * NULLIF(baumhoehe, 0) + 0.5, 5)"
+# height where the register has none: inverted crown estimate above, else a typical street tree
+TREE_HEIGHT_SQL = "COALESCE(NULLIF(baumhoehe, 0), GREATEST((NULLIF(kronedurch, 0) - 0.5) / 0.53, 3), 10)"
 
 
 @app.get("/api/trees")
@@ -700,6 +702,8 @@ def list_trees(
     bbox: str = Query(..., description="min_lon,min_lat,max_lon,max_lat in WGS84"),
     db: Session = Depends(get_db),
 ):
+    """Street and park trees (Berlin tree register) in the view: trunk point plus the dimensions the map draws the
+    tree with (3D: treetool's CityGML tree prototypes, 2D: trunk point and crown circle)."""
     try:
         min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
     except ValueError:
@@ -720,24 +724,28 @@ def list_trees(
             SELECT * FROM (
                 SELECT
                     gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'strassenbaum' AS herkunft,
+                    art_gruppe, stammumfg,
                     (kronedurch IS NULL OR kronedurch <= 0) AS krone_geschaetzt,
-                    ST_AsGeoJSON(ST_Transform(
-                        ST_Buffer(geom, GREATEST({crown} / 2, :min_radius), 'quad_segs=4'), 4326
-                    ), 6) AS geom
+                    (baumhoehe IS NULL OR baumhoehe <= 0) AS hoehe_geschaetzt,
+                    GREATEST({crown}, 2 * :min_radius) AS krone_m,
+                    {height} AS hoehe_m,
+                    ST_AsGeoJSON(ST_Transform(geom, 4326), 7) AS geom
                 FROM core_veg.strassenbaeume
                 WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
                 UNION ALL
                 SELECT
                     gisid, art_dtsch, gattung_deutsch, kronedurch, baumhoehe, bezirk, 'anlagenbaum' AS herkunft,
+                    art_gruppe, stammumfg,
                     (kronedurch IS NULL OR kronedurch <= 0) AS krone_geschaetzt,
-                    ST_AsGeoJSON(ST_Transform(
-                        ST_Buffer(geom, GREATEST({crown} / 2, :min_radius), 'quad_segs=4'), 4326
-                    ), 6) AS geom
+                    (baumhoehe IS NULL OR baumhoehe <= 0) AS hoehe_geschaetzt,
+                    GREATEST({crown}, 2 * :min_radius) AS krone_m,
+                    {height} AS hoehe_m,
+                    ST_AsGeoJSON(ST_Transform(geom, 4326), 7) AS geom
                 FROM core_veg.anlagenbaeume
                 WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
             ) t
             LIMIT :limit
-            """.replace("{crown}", CROWN_DIAMETER_SQL)
+            """.replace("{crown}", CROWN_DIAMETER_SQL).replace("{height}", TREE_HEIGHT_SQL)
         ),
         params,
     ).all()
@@ -757,6 +765,12 @@ def list_trees(
                     "baumhoehe": row.baumhoehe,
                     "bezirk": row.bezirk,
                     "herkunft": row.herkunft,
+                    "art_gruppe": row.art_gruppe,
+                    "stammumfg": row.stammumfg,
+                    "hoehe_geschaetzt": row.hoehe_geschaetzt,
+                    # dimensions the map draws with (estimated where the register has none)
+                    "krone_m": round(float(row.krone_m), 2),
+                    "hoehe_m": round(float(row.hoehe_m), 2),
                 },
             }
             for row in rows
