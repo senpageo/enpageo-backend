@@ -71,3 +71,18 @@ SELECT * FROM core_bldg.f_building_demand('stark', 2045, '{verschattung_aussen,n
 Ergibt je beheiztem Gebäude Kälte min/std/max und Wärme (KWW, Pfad 2025 → 2045 linear, Klima nur auf Raumwärme).
 Berlin 2025 mittel: Kälte 3,3 TWh/a (1,2–7,8), Wärme 23,8 TWh/a; ganze Stadt in ~13 s.
 Neulauf des Skripts setzt alle Werte zurück.
+
+## Wärme- und Kälteliniendichten (`../kaeltenetz/liniendichte.sql`)
+
+Liniendichte = Jahresbedarf aller an einen Hauptnetz-Abschnitt angeschlossenen Gebäude je Meter, in kWh/(m·a) wie die
+Berliner Wärmeliniendichten. `*_kwh_m_a` bezieht sich auf die Länge des Straßenabschnitts, `*_kwh_m_a_trasse` auf
+Hauptleitung plus Anschlussleitungen. Bedarfe aus `core_bldg.f_building_demand`, Kälte also Mockup.
+
+```sql
+SELECT * FROM core_bldg.f_line_density('stark', 2045, '{nachtlueftung_auto}', 26);   -- beliebiges Szenario, ~13 s
+SELECT * FROM core_base.v_line_density WHERE scenario = '2045_stark';                -- vorberechnet, mit Geometrie
+CALL core_bldg.p_refresh_line_density();   -- alle Szenarien aus core_bldg.line_density_scenario neu (~1 min)
+```
+
+Nach neuen Bedarfen oder `load_strassennetz.py --sync` die Prozedur erneut aufrufen. Kurze Abschnitte mit großen
+Gebäuden (Rechenzentren, Kaufhäuser) ergeben sehr hohe Einzelwerte.

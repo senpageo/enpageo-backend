@@ -7,6 +7,7 @@ je Gebäude.
                                     Kälte (Platzhalter) und Ist-Kälte (erkannte Anlagen), Liniendichten
 
   core_base.v_potential_network     Sicht: potenzielle Netzstruktur (Hauptleitungen + Anschlussleitungen)
+  core_bldg.line_density            Wärme- und Kälteliniendichten je Abschnitt (liniendichte.sql)
 
 Es geht nicht um bestehende Netze und nicht um die erkannten Kälteanlagen, sondern um eine potenzielle Netzstruktur
 für die ganze Stadt: sobald Wärme- und Kältebedarf je Gebäude vorliegen, ergeben sich daraus Liniendichten, die zeigen,
@@ -144,6 +145,8 @@ def main():
         cur.execute("""
             CREATE SCHEMA IF NOT EXISTS core_base;
             DROP VIEW IF EXISTS core_base.v_street_segment_load;
+            DROP VIEW IF EXISTS core_base.v_potential_network;
+            DROP VIEW IF EXISTS core_base.v_line_density;  -- danach liniendichte.sql neu ausführen
             DROP TABLE IF EXISTS core_bldg.network_connection;
             DROP TABLE IF EXISTS core_base.street_segment;
             CREATE TABLE core_base.street_segment (
