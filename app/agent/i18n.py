@@ -39,6 +39,28 @@ EXACT = {
     "Prozesswärme (KWW)": "Process heat (KWW)",
     "Ja": "Yes", "Nein": "No", "Ja/Nein": "Yes/No",
     "Straße": "Street",
+    "Kältebedarf": "Cooling demand",
+    "spez. Kältebedarf": "Specific cooling demand",
+    "Kältebedarf min": "Cooling demand min",
+    "Kältebedarf max": "Cooling demand max",
+    "benötigte Kälteleistung": "Required cooling capacity",
+    "Kälteliniendichte": "Cooling line density",
+    "Kältedichte": "Cooling density",
+    "Dichte der benötigten Kälteleistung": "Required cooling capacity density",
+    "Kälteverbrauch (aus installierter Leistung)": "Cooling consumption (from installed capacity)",
+    "Kälteverbrauch (aus installierter Leistung, Abgleich)": "Cooling consumption (from installed capacity, cross-check)",
+    "Kälteverbrauch erkannter Anlagen (Abgleich)": "Cooling consumption of detected units (cross-check)",
+    "Kälteverbrauch min": "Cooling consumption min",
+    "Kälteverbrauch max": "Cooling consumption max",
+    "installierte Kälteleistung erkannter Anlagen": "Installed capacity of detected units",
+    "Gebäude mit erkannter Anlage": "Buildings with detected unit",
+    "Kältebedarf ohne die Maßnahmen": "Cooling demand without the measures",
+    "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme).":
+        "Required cooling capacity = cooling demand / full-load hours of the usage (assumption).",
+    "Die Monatsverteilung ist eine pauschale Annahme (Mai–September), für alle Nutzungsarten gleich.":
+        "The monthly split is a flat assumption (May-September), the same for all usage types.",
+    "Kälteverbrauch = Schätzung aus der installierten Leistung erkannter Kälteanlagen (Luftbild) mit Volllaststunden, nur für Gebäude mit erkannter Anlage; Abgleich zum Kältebedarf, große Unsicherheit.":
+        "Cooling consumption = estimate from the installed capacity of detected chillers (aerial imagery) with full-load hours, only for buildings with a detected unit; cross-check of the demand, large uncertainty.",
     "Wärmeliniendichte": "Heat line density",
     "Kälteliniendichte (Platzhalter)": "Cooling line density (placeholder)",
     "Wärmebedarf (KWW)": "Heat demand (KWW)",
@@ -151,6 +173,23 @@ EXACT = {
     # missing data (report_missing_data: "Fehlt noch: <what>. <Why>.")
     "Klimaszenarien und Zukunftsjahre": "Climate scenarios and future years",
     "Wirkungen von Maßnahmen und Sanierungen auf den Kältebedarf": "Effects of measures and retrofits on cooling demand",
+    "Simulierte Klimaszenarien und Zukunftsjahre": "Simulated climate scenarios and future years",
+    "Simulierte Wirkungen von Maßnahmen und Sanierungen auf den Kältebedarf":
+        "Simulated effects of measures and retrofits on cooling demand",
+    "Kommen aus der Simulation im Projekt; Annahmen (Mockup) je Gebäude gibt es schon (building_scenario_demand)":
+        "Will come from the simulation in the project; assumptions (mock-up) per building are already available",
+    "Kommen aus der Simulation im Projekt; Annahmen (Mockup) für Verschattung und Lüftung gibt es schon (building_scenario_demand)":
+        "Will come from the simulation in the project; assumptions (mock-up) for shading and ventilation are already available",
+    "Adresse": "Address",
+    "min": "min", "max": "max",
+    "mit Maßnahmen": "with measures",
+    "mit Maßnahmen min": "with measures min",
+    "mit Maßnahmen max": "with measures max",
+    "Einsparung": "Saving",
+    "Rechenzentren und Kühlhäuser (Prozesskälte) sind nicht in der Rangfolge, weil die Maßnahmen dort nicht wirken.":
+        "Data centres and cold stores (process cooling) are left out of the ranking, as the measures do not act there.",
+    "Die Maßnahmen wirken in den Annahmen nur auf den Kältebedarf.":
+        "In the assumptions, the measures only act on cooling demand.",
     "Innenraumtemperaturen und Überhitzungsstunden": "Indoor temperatures and overheating hours",
     "Angaben zur Wärmebelastung im Außenraum": "Outdoor heat stress",
     "Strombedarf und Lastgänge": "Electricity demand and load profiles",
@@ -199,7 +238,19 @@ USAGE = {
 def _scenario_en(s: str) -> str:
     return (s.replace("geringer Klimawandel", "low climate change").replace("mittlerer Klimawandel", "medium climate change")
              .replace("starker Klimawandel", "strong climate change").replace("alle Maßnahmen", "all measures")
-             .replace("Sollwert", "setpoint"))
+             .replace("Sollwert nach Gebäudefunktion", "setpoint per building function")
+             .replace("Sollwert", "setpoint").replace("ohne Maßnahmen", "without measures")
+             .replace("Maßnahmen: ", "measures: ").replace("Standardszenario", "standard scenario")
+             .replace("Standard (", "standard (")
+             .replace("außenliegende Fensterverschattung", "external window shading")
+             .replace("Lüftung durch Nutzer", "ventilation by users")
+             .replace("automatische Nachtlüftung", "automatic night ventilation"))
+
+
+def _measures_en(s: str) -> str:
+    return (s.replace("außenliegende Fensterverschattung", "external window shading")
+             .replace("Lüftung durch Nutzer (Fensterlüftung in kühlen Stunden)", "ventilation by users (cool hours)")
+             .replace("automatische Nachtlüftung", "automatic night ventilation").replace(" bis ", " to "))
 
 
 PATTERNS = [
@@ -213,6 +264,25 @@ PATTERNS = [
      lambda m: f"Scenario {_scenario_en(m.group(1))}. Line density = annual demand of the connected heated buildings "
                f"per metre of {'main and connection line' if m.group(2).startswith('Haupt') else 'street section'} "
                "on the potential network structure (not an existing network)."),
+    (re.compile(r"^(Kältebedarf|Wärmebedarf \(KWW\)) (\d{4})$"),
+     lambda m: f"{'Cooling demand' if m.group(1) == 'Kältebedarf' else 'Heat demand (KWW)'} {m.group(2)}"),
+    (re.compile(r"^Szenario (.+?)(, Sollwert nach Nutzung \(DIN V 18599-10\))?\. Werte sind Annahmen \(Mockup\) bis zur "
+                r"Simulation der Projektpartner, keine Simulation\.$"),
+     lambda m: f"Scenario {_scenario_en(m.group(1))}{', setpoint by usage (DIN V 18599-10)' if m.group(2) else ''}. "
+               "Values are assumptions (mock-up) until the project partners simulate, not a simulation."),
+    (re.compile(r"^Maßnahmen: (.+)\. Wirkungen multiplizieren sich; Kühlhäuser und Rechenzentren ausgenommen\.$"),
+     lambda m: f"Measures: {_measures_en(m.group(1))}. Effects multiply; cold stores and data centres excluded."),
+    (re.compile(r"^(.+) – (min|max)$"), lambda m: f"{tr(m.group(1))} – {m.group(2)}"),
+    (re.compile(r"^Kältebedarf: (Standardszenario|Szenario) (.+)\. Annahmen \(kWh/\(m²·a\) je Gebäudefunktion und "
+                r"Baualter mit Korrekturfaktoren\), keine Simulation\.$"),
+     lambda m: f"Cooling demand: {'standard scenario' if m.group(1) == 'Standardszenario' else 'scenario'} "
+               f"{_scenario_en(m.group(2))}. Assumptions (kWh/(m²·a) per building function and age class with "
+               "correction factors), not a simulation."),
+    (re.compile(r"^Ohne die Maßnahmen: (.+)\. Mit: (.+)\. Annahmen, keine Simulation\.$"),
+     lambda m: f"Without the measures: {_scenario_en(m.group(1))}. With: {_scenario_en(m.group(2))}. "
+               "Assumptions, not a simulation."),
+    (re.compile(r"^Maßnahmen: (.+)\. Wirkungen multiplizieren sich\.$"),
+     lambda m: f"Measures: {_measures_en(m.group(1))}. Effects multiply."),
     (re.compile(r"^Median im Gebiet (\d+) kWh/\(m·a\), Gesamtmittel (\d+) kWh/\(m·a\)\.$"),
      lambda m: f"Median in the area {m.group(1)} kWh/(m·a), overall mean {m.group(2)} kWh/(m·a)."),
     (re.compile(r"^Je höher die Liniendichte, desto günstiger für ein Netz; eine Wirtschaftlichkeitsprüfung ersetzt "

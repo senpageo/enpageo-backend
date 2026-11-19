@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from . import cooling
 from .frames import field, frame
 
 
@@ -316,16 +317,9 @@ MAX_RESULTS = 500
 DEFAULT_RESULTS = 200
 MIN_CROWN_RADIUS_M = 0.5
 
-# July, matching the single fixed month calib_monthly used to report ("cooling_demand_07")
-# before it was dropped — see core_bldg.usage_cooling_profile and _execute_find_buildings.
-COOLING_DEMAND_EXPR = (
-    'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) '
-    "* COALESCE(ucp.specific_annual_cooling_kwh_m2, 20) "
-    "* COALESCE(ucp.pct_07, 30) / 100"
-)
-COOLING_ANNUAL_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_annual_cooling_kwh_m2, 20)'
-# Required cooling capacity in kW: generic specific capacity per usage type (W/m²) × area. Placeholder like the demand.
-COOLING_CAPACITY_EXPR = 'COALESCE(pb."PrimaryUsageZoneArea", pb."Heated area", 0) * COALESCE(ucp.specific_cooling_capacity_w_m2, 0) / 1000'
+# Cooling demand (mock-up kWh/(m²·a) with scenario factors) and required capacity: see cooling.py
+COOLING_ANNUAL_EXPR = cooling.ANNUAL
+COOLING_CAPACITY_EXPR = cooling.CAPACITY
 # Building supplied by a detected chiller (assignment incl. moving it from car parks etc. to the heated neighbour)
 HAS_CHILLER_EXPR = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.cooling_estimate_building))"
 FIND_BUILDINGS_SORT = {
@@ -385,7 +379,7 @@ FIND_BUILDINGS_SCHEMA = {
                 "'sensibel' (hospitals, care homes, schools)."
             ),
         },
-        "min_cooling_capacity_kw": {"type": "number", "description": "Minimum required cooling capacity in kW (1 MW = 1000), generic placeholder"},
+        "min_cooling_capacity_kw": {"type": "number", "description": "Minimum required cooling capacity in kW (1 MW = 1000): cooling demand / full-load hours, assumption"},
         "max_cooling_capacity_kw": {"type": "number", "description": "Maximum required cooling capacity in kW"},
         "has_chiller": {"type": "boolean", "description": "true: only buildings supplied by a cooling unit detected from aerial imagery (with estimated actual cooling and electricity use); false: only buildings without one"},
         "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names); overrides the map view"},
@@ -393,8 +387,9 @@ FIND_BUILDINGS_SCHEMA = {
         "near_place": {"type": "string", "description": "Named place in Berlin (e.g. 'Tiergarten'); use with max_distance_m"},
         "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
         "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue"},
-        "min_cooling_demand": {"type": "number", "description": "Minimum July cooling demand in kWh"},
-        "max_cooling_demand": {"type": "number", "description": "Maximum July cooling demand in kWh"},
+        "min_cooling_demand": {"type": "number", "description": "Minimum annual cooling demand in kWh"},
+        "max_cooling_demand": {"type": "number", "description": "Maximum annual cooling demand in kWh"},
+        **cooling.SCENARIO_PROPS,
         "min_heating_demand": {"type": "number", "description": "Minimum yearly heating demand in kWh"},
         "max_heating_demand": {"type": "number", "description": "Maximum yearly heating demand in kWh"},
         "min_year_built": {"type": "integer", "description": "Earliest year of construction"},
@@ -598,13 +593,19 @@ def _execute_find_buildings(
     has_pv: bool | None = None,
     min_pv_potential_kwp: float | None = None,
     data_center: bool | None = None,
+    climate: str | None = None,
+    year: int | None = None,
+    measures: list[str] | None = None,
+    setpoint: float | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
     conditions = []
     params: dict = {"limit": limit}
+    sc = cooling.scenario(climate, year, measures, setpoint)
+    cooling.bind(db, params, sc)
     notes: list[str] = []
-    sources = ["footprints", "building_params", "energymap_heating", "cooling_placeholder"]
+    sources = ["footprints", "building_params", "energymap_heating", "cooling_mockup"]
 
     if near_place:
         place = resolve_place(near_place)
@@ -663,10 +664,10 @@ def _execute_find_buildings(
         if has_chiller is False:
             notes.append("„Keine Kühlanlage“ heißt: im Luftbild nichts erkannt. Innenliegende Anlagen sieht die Erkennung nicht.")
     if min_cooling_demand is not None:
-        conditions.append(f"({COOLING_DEMAND_EXPR}) >= :min_cooling_demand")
+        conditions.append(f"({COOLING_ANNUAL_EXPR}) >= :min_cooling_demand")
         params["min_cooling_demand"] = min_cooling_demand
     if max_cooling_demand is not None:
-        conditions.append(f"({COOLING_DEMAND_EXPR}) <= :max_cooling_demand")
+        conditions.append(f"({COOLING_ANNUAL_EXPR}) <= :max_cooling_demand")
         params["max_cooling_demand"] = max_cooling_demand
     if min_heating_demand is not None:
         conditions.append("COALESCE(el.cons_c2r2, 0) >= :min_heating_demand")
@@ -687,20 +688,16 @@ def _execute_find_buildings(
 
     where_extra = f"AND {' AND '.join(conditions)}" if conditions else ""
 
-    # No per-building simulation result remains for cooling (core_bldg.calib_monthly was
-    # dropped — 36 GB, 221 of 222 climate/refurbishment combinations never queried by this
-    # tool, and its numbers were themselves estimates, not measurements). Heating stays
-    # building-specific via emp.emblive (real per-building annual demand); cooling now comes
-    # from core_bldg.usage_cooling_profile, a small per-usage-type placeholder — see that
-    # table's comment for the reasoning and cooling_demand_07 for why "*_07" (July).
+    # Heating stays building-specific via emp.emblive (EnergyMap) and the KWW catalogue; cooling demand is the
+    # mock-up per building function and age class in the requested scenario (cooling.py).
     base_from = """
         FROM emc.building b
         LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
         LEFT JOIN emp.emblive el ON el.uuid = b.uuid
-        LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
+        {COOL_JOIN}
         {KWW_JOINS}
         WHERE 1=1
-    """.replace("{KWW_JOINS}", KWW_JOINS)
+    """.replace("{KWW_JOINS}", KWW_JOINS).replace("{COOL_JOIN}", cooling.COOL_JOIN)
     sources += ["alkis_function", "kww_heat", "kww_process_heat"]
     sources = list(dict.fromkeys(sources))
 
@@ -712,8 +709,10 @@ def _execute_find_buildings(
             SELECT
                 b.uuid AS bldg_uuid,
                 ST_AsGeoJSON(ST_Transform(b.geom, 4326)) AS geom,
-                ({COOLING_DEMAND_EXPR}) AS cooling_demand,
                 ({COOLING_ANNUAL_EXPR}) AS cooling_annual,
+                ({cooling.ANNUAL_MIN}) AS cooling_annual_min,
+                ({cooling.ANNUAL_MAX}) AS cooling_annual_max,
+                cb.kwh_m2a_std AS cooling_specific_base,
                 ({COOLING_CAPACITY_EXPR}) AS cooling_capacity_kw,
                 el.cons_c2r2 AS heating_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type,
@@ -747,9 +746,8 @@ def _execute_find_buildings(
             "geometry": json.loads(row.geom),
             "properties": {
                 "bldg_uuid": row.bldg_uuid,
-                "cooling_demand": row.cooling_demand,
-                "cooling_annual": row.cooling_annual,
-                "cooling_capacity_kw": row.cooling_capacity_kw,
+                **{k: (round(float(getattr(row, k)), 1) if getattr(row, k) is not None else None)
+                   for k in ("cooling_annual", "cooling_annual_min", "cooling_annual_max", "cooling_capacity_kw")},
                 "heating_demand": row.heating_demand,
                 "usage_zone_type": row.usage_zone_type,
                 "building_function": row.building_function,
@@ -774,7 +772,7 @@ def _execute_find_buildings(
     if any(f["properties"]["cooling_actual_kwh"] is not None for f in features):
         sources += ["chillers", "chiller_estimate"]
         sources = list(dict.fromkeys(sources))
-    cooling_values = [f["properties"]["cooling_demand"] for f in features if f["properties"]["cooling_demand"] is not None]
+    cooling_values = [f["properties"]["cooling_annual"] for f in features if f["properties"]["cooling_annual"] is not None]
     heating_values = [f["properties"]["heating_demand"] for f in features if f["properties"]["heating_demand"] is not None]
     kww_values = [f["properties"]["kww_heat_demand"] for f in features if f["properties"]["kww_heat_demand"] is not None]
     functions: dict[str, int] = {}
@@ -798,21 +796,23 @@ def _execute_find_buildings(
             field("pv_potential_kwp", "quantitative", "PV-Potenzial Dach", "kWp"),
             field("pv_installed_kwp", "quantitative", "PV installiert (ab 30 kWp / öffentlich)", "kWp"),
             field("data_center", "nominal", "Rechenzentrum"),
-            field("chiller_capacity_kw", "quantitative", "Kälteleistung erkannter Anlagen (geschätzt)", "kW"),
-            field("cooling_actual_kwh", "quantitative", "Ist-Kälte (Schätzung, Mittel)", "kWh/a"),
-            field("cooling_actual_min", "quantitative", "Ist-Kälte min", "kWh/a"),
-            field("cooling_actual_max", "quantitative", "Ist-Kälte max", "kWh/a"),
+            field("cooling_annual", "quantitative", "Kältebedarf", "kWh/a"),
+            field("cooling_annual_min", "quantitative", "Kältebedarf min", "kWh/a"),
+            field("cooling_annual_max", "quantitative", "Kältebedarf max", "kWh/a"),
+            field("cooling_capacity_kw", "quantitative", "benötigte Kälteleistung", "kW"),
+            field("cooling_actual_kwh", "quantitative", "Kälteverbrauch (aus installierter Leistung, Abgleich)", "kWh/a"),
+            field("cooling_actual_min", "quantitative", "Kälteverbrauch min", "kWh/a"),
+            field("cooling_actual_max", "quantitative", "Kälteverbrauch max", "kWh/a"),
+            field("chiller_capacity_kw", "quantitative", "installierte Kälteleistung erkannter Anlagen", "kW"),
             field("electricity_cooling_kwh", "quantitative", "Kältestrom (Schätzung, Mittel)", "kWh/a"),
             field("electricity_cooling_min", "quantitative", "Kältestrom min", "kWh/a"),
             field("electricity_cooling_max", "quantitative", "Kältestrom max", "kWh/a"),
             field("chiller_check", "nominal", "Zuordnung prüfen"),
             field("connection_length_m", "quantitative", "Anschluss an Straße", "m"),
-            field("cooling_annual", "quantitative", "Kältebedarf (Platzhalter)", "kWh/a"),
-            field("cooling_capacity_kw", "quantitative", "Kälteleistung (Platzhalter)", "kW"),
         ],
         [
-            {k: (round(float(v), 1) if k in ("heating_demand", "kww_heat_demand", "cooling_annual", "cooling_capacity_kw") and v is not None else v)
-             for k, v in f["properties"].items() if k != "cooling_demand"}
+            {k: (round(float(v), 1) if k in ("heating_demand", "kww_heat_demand") and v is not None else v)
+             for k, v in f["properties"].items()}
             for f in features
         ],
         sources,
@@ -826,9 +826,9 @@ def _execute_find_buildings(
                "has_chiller": has_chiller, "districts": districts, "scope": scope, "near_place": near_place,
                "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
                "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
-               "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center},
-        notes=notes + ["Kältebedarf und Kälteleistung sind generische Platzhalter je Nutzungsart, keine Simulation."]
-              + ([COOLING_ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
+               "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center, **sc},
+        notes=notes + [cooling.note(sc), "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme)."]
+              + ([cooling.ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
     )
 
     return {
@@ -839,6 +839,9 @@ def _execute_find_buildings(
             "total_matches": total,
             "returned": len(features),
             "truncated": total > len(features),
+            "cooling_scenario": cooling.label(sc),
+            "standard_scenario": cooling.is_standard(sc),
+            "sum_cooling_demand_kwh": round(sum(cooling_values)) if cooling_values else None,
             "avg_cooling_demand_kwh": round(sum(cooling_values) / len(cooling_values), 1) if cooling_values else None,
             "avg_heating_demand_kwh": round(sum(heating_values) / len(heating_values), 1) if heating_values else None,
             "sum_kww_heat_demand_kwh": round(sum(kww_values)) if kww_values else None,

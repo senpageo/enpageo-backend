@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import time
+from types import SimpleNamespace
 
 import anthropic
 from sqlalchemy.orm import Session
@@ -24,8 +26,13 @@ MAX_TOOL_ROUNDS = 4
 
 SYSTEM_PROMPT = """Du bist ein Assistent für eine interaktive Karte von Berliner Gebäuden und Bäumen (Enpageo).
 Du kannst Gebäude im aktuell sichtbaren Kartenausschnitt nach Kriterien wie Nutzungstyp, Gebäudefunktion (ALKIS), \
-Prozesswärme (KWW), Heiz-/Kältebedarf und Baujahr filtern (find_buildings). Der Heizbedarf ist eine gebäudescharfe Jahresschätzung, der \
-Kältebedarf ein grober Schätzwert je Nutzungstyp (keine Simulation).
+Prozesswärme (KWW), Heiz-/Kältebedarf und Baujahr filtern (find_buildings). Der Heizbedarf ist eine gebäudescharfe Jahresschätzung.
+Kältebedarf: Annahmen in kWh/(m²·a) je Gebäudefunktion und Baualtersklasse mit Korrekturfaktoren für Klimaszenario \
+(gering/mittel/stark), Jahr (2025–2050), Maßnahmen (außenliegende Fensterverschattung, Lüftung durch Nutzer, \
+automatische Nachtlüftung) und Sollwert (22/24/26 °C), keine Simulation. Alle Werkzeuge mit Kältebedarf nehmen dafür \
+die Parameter climate, year, measures, setpoint. Nennt die Frage dazu nichts, lass sie weg: dann gilt das \
+Standardszenario (mittlerer Klimawandel, 2030, Sollwert nach Gebäudefunktion, außenliegende Fensterverschattung, \
+keine Nachtlüftung). Nenne in der Antwort immer, welches Szenario gerechnet wurde.
 Du kannst außerdem Straßen- und Anlagenbäume (Berlin Baumbestand) nach Art, Kronendurchmesser, Höhe, \
 Bezirk oder Herkunft (Straße/Anlage) filtern (find_trees).
 Außerdem kannst du Dach-Kühlanlagen (Klimaanlagen-Kondensatoren, Kühltürme — per Luftbildauswertung \
@@ -36,17 +43,19 @@ je Nutzungsart, Bezirk, Postleitzahl und/oder Baualtersklasse; share_of_total f�
 Kältebedarfs nutzt du monthly_profile. Für Hotspots, Dichte je Fläche und die Überlagerung von Wärme und Kälte nutzt du density_grid. Für \
 Wärme- und Kälteliniendichten und die Frage, wo sich ein Wärme- oder Kältenetz lohnt, nutzt du line_density \
 (potenzielle Netzstruktur auf den Straßen, kWh je Meter und Jahr; bei „wo lohnt sich ein Netz“ group_by='street', min_length_m=200, min_buildings=5). Nur dort gibt es \
-auch 2045-Klimaszenarien und Maßnahmen (Kälte = Annahme). Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
+auch fertige Szenarien (standard, 2025, 2045 gering/mittel/stark). Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
 heißt Baujahr 1870 bis 1918. Neubau heißt Baujahr ab 2010 (Parameter new_building).
 Vorhanden sind außerdem: Grundstückseigentum des Landes Berlin (owner: kommunal/landeseigen = land_berlin, Bezirk, \
 Hauptverwaltung, Sondervermögen; gilt für das Grundstück, nicht das Gebäude), PV-Dachpotenzial in kWp (min_pv_potential_kwp, \
 Metrik pv_potential_kwp), registrierte PV-Anlagen ab 30 kWp bzw. der öffentlichen Hand (has_pv, pv_installed_kwp) und \
 Rechenzentren aus OpenStreetMap/PeeringDB (building_function 'Rechenzentrum', nicht vollständig).
-Für Gebäude mit erkannter Kälteanlage gibt es einen geschätzten Ist-Kälteverbrauch, Kältestrom und die installierte \
-Kälteleistung (has_chiller, Metriken cooling_actual, electricity_cooling, chiller_capacity), jeweils mit Spanne min–max. \
-Nenne bei diesen Werten IMMER die Spanne und dass die Unsicherheit groß ist. Das ist etwas anderes als der Kältebedarf \
-(Platzhalter je Nutzungsart).
-Dir fehlen noch: Klimaszenarien und Zukunftsjahre, Wirkung von Maßnahmen, Innenraumtemperaturen, Wärmebelastung, \
+Für Gebäude mit erkannter Kälteanlage gibt es den Kälteverbrauch: geschätzt aus der installierten Leistung mit \
+Volllaststunden, dazu Kältestrom und installierte Kälteleistung (has_chiller, Metriken cooling_actual, electricity_cooling, \
+chiller_capacity), jeweils mit Spanne min–max. Nenne bei diesen Werten IMMER die Spanne und dass die Unsicherheit groß ist. \
+Der Kälteverbrauch ist ein Abgleich zum Kältebedarf, nicht dasselbe: Steht er im Ergebnis, nenne ihn zusätzlich zum Bedarf.
+Wie viel weniger Kältebedarf bestimmte Maßnahmen bringen, zeigt building_scenario_demand (compare_measures) je Gebäude \
+mit Einsparung in MWh/a und %.
+Dir fehlen noch: simulierte Klimaszenarien und Maßnahmenwirkungen, Innenraumtemperaturen, Wärmebelastung, \
 Gesamtstrom und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kälte- und Wärmenetze, gemessene \
 Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, U-Werte und Sanierungsstand, Kältebedarf der \
 Rechenzentren. Braucht eine Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
@@ -82,8 +91,49 @@ scope='berlin' — sonst wird nur der sichtbare Kartenausschnitt durchsucht. Bei
 - Folgefragen beziehen sich auf den bisherigen Gesprächsverlauf, auch wenn das Gebiet nicht noch einmal genannt wird.
 - Rufe pro Antwort genau ein Datenwerkzeug auf: find_* für einzelne Objekte, die übrigen für zusammengefasste Werte.
 - Die Darstellung (Karte, Diagramm, Tabelle) wählt die Anwendung selbst. Beschreibe das Ergebnis in 1–3 Sätzen mit \
-den wichtigsten Zahlen; nenne beim Kältebedarf, dass es ein grober Platzhalter-Schätzwert ist.
+den wichtigsten Zahlen; nenne beim Kältebedarf das Szenario und dass es Annahmen sind.
+- Schließe jede Antwort mit einer kurzen Anschlussfrage, die die Nutzerin weiterbringt: z. B. ein anderes \
+Klimaszenario oder Jahr, eine weitere Maßnahme, ein anderes Gebiet, eine Aufteilung nach Nutzung oder Bezirk.
+- Schreibe danach in eine eigene letzte Zeile „VORSCHLAG: “ und die naheliegendste nächste Eingabe der Nutzerin, so \
+wie sie sie tippen würde (kurz, z. B. „Ja, mit starkem Klimawandel“). Diese Zeile wird nicht angezeigt, sondern als \
+Vorschlag ins Eingabefeld geschrieben.
 """
+
+# the suggestion line the model ends its answer with (see the last rule of the prompt)
+_SUGGESTION = re.compile(r"\n?\s*(?:\*\*)?(?:VORSCHLAG|SUGGESTION)(?:\*\*)?\s*:\s*(.+?)\s*$", re.S | re.I)
+
+
+def _split_suggestion(reply: str) -> tuple[str, str | None]:
+    """'answer ... VORSCHLAG: next input' -> ('answer ...', 'next input')."""
+    m = _SUGGESTION.search(reply or "")
+    if not m:
+        return reply, None
+    suggestion = m.group(1).strip().strip('"„“”').strip()
+    return reply[: m.start()].rstrip(), (suggestion.splitlines()[0][:200] if suggestion else None)
+
+
+# qwen3 sometimes writes its tool call into the answer text instead of the tool-call channel, e.g.
+# <function-call>{"name": "...", "arguments": {...}}</function-call> (also seen as <tool_call>...</tool_call>).
+_TEXT_TOOL_CALL = re.compile(r"<(function-call|tool_call)>\s*(\{.*?\})\s*</\1>", re.S)
+
+
+def _text_tool_calls(content: str | None) -> list:
+    """Tool calls written as text, in the shape of the SDK's tool_calls (id, function.name, function.arguments)."""
+    calls = []
+    for k, m in enumerate(_TEXT_TOOL_CALL.finditer(content or "")):
+        try:
+            data = json.loads(m.group(2))
+        except json.JSONDecodeError:
+            continue
+        name = data.get("name")
+        args = data.get("arguments", data.get("parameters", {}))
+        if not isinstance(name, str):
+            continue
+        if not isinstance(args, str):
+            args = json.dumps(args)
+        calls.append(SimpleNamespace(id=f"text_call_{k}", type="function",
+                                     function=SimpleNamespace(name=name, arguments=args)))
+    return calls
 
 
 def _for_llm(result: dict, lang: str = "de") -> dict:
@@ -260,20 +310,23 @@ def _run_chat_ollama(db: Session, message: str, bbox: str, polygon: dict | None,
                 temperature=0,
             )
             msg = response.choices[0].message
+            tool_calls = msg.tool_calls or _text_tool_calls(msg.content)
 
-            if not msg.tool_calls:
+            if not tool_calls:
                 return {"reply": (msg.content or "").strip(), "geojson": geojson_result, "layer": layer_result,
                         **_presentation(frame_result, lang, chooser)}
 
             messages.append(
                 {
                     "role": "assistant",
-                    "content": msg.content,
-                    "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+                    "content": None if not msg.tool_calls else msg.content,
+                    "tool_calls": [{"id": tc.id, "type": "function",
+                                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                                   for tc in tool_calls],
                 }
             )
 
-            for tool_call in msg.tool_calls:
+            for tool_call in tool_calls:
                 tool_input = json.loads(tool_call.function.arguments or "{}")
                 result = execute_tool(tool_call.function.name, tool_input, db, bbox, polygon)
                 if result.get("geojson"):
@@ -326,5 +379,6 @@ def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None, 
     else:
         used = model or OLLAMA_MODEL
         res = _run_chat_ollama(db, message, bbox, polygon, history, lang, chooser, used)
+    res["reply"], res["suggestion"] = _split_suggestion(res.get("reply") or "")
     res["meta"] = {"provider": provider, "model": used, "chooser": chooser, "seconds": round(time.time() - t0, 2)}
     return res

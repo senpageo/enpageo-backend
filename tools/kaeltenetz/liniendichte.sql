@@ -52,6 +52,8 @@ CREATE TABLE core_bldg.line_density_scenario (
     scenario text PRIMARY KEY, label text, climate text, year int, measures text[], setpoint numeric, heat_path text,
     sort int);
 INSERT INTO core_bldg.line_density_scenario VALUES
+  ('standard',                'Standardszenario 2030, mittlerer Klimawandel, außenliegende Fensterverschattung',
+                              'mittel', 2030, '{verschattung_aussen}', NULL, '2045_o45', 0),
   ('2025',                    'Heute (2025)',                                        'mittel', 2025, '{}', NULL, '2045_o45', 1),
   ('2045_gering',             '2045, geringer Klimawandel',                          'gering', 2045, '{}', NULL, '2045_o45', 2),
   ('2045_mittel',             '2045, mittlerer Klimawandel',                         'mittel', 2045, '{}', NULL, '2045_o45', 3),
