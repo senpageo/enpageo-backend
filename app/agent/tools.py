@@ -197,7 +197,8 @@ KWW_JOINS = f"""
         LEFT JOIN core_bldg.pv_installed_building pvi ON pvi.uuid = b.uuid
         LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid
         LEFT JOIN core_bldg.cooling_estimate_building cact ON cact.uuid = b.uuid
-        LEFT JOIN core_bldg.network_connection ncon ON ncon.uuid = b.uuid"""
+        LEFT JOIN core_bldg.network_connection ncon ON ncon.uuid = b.uuid
+        LEFT JOIN core_bldg.envelope_building env ON env.uuid = b.uuid"""
 
 # Actual cooling from detected chillers (tools/kaelte/kaelte_ist_schaetzung.py): rough, with a min-max band
 COOLING_ACTUAL_NOTE = (
@@ -295,7 +296,7 @@ def _resolve_place_cached(name: str) -> dict | None:
     try:
         r = httpx.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": name, "format": "jsonv2", "limit": 1, "polygon_geojson": 1, "polygon_threshold": 0.0005,
+            params={"q": name, "format": "jsonv2", "limit": 5, "polygon_geojson": 1, "polygon_threshold": 0.0005,
                     "viewbox": "13.08,52.68,13.76,52.33", "bounded": 1},
             headers={"User-Agent": "enpageo-coolingmap/1.0"},
             timeout=10,
@@ -305,12 +306,64 @@ def _resolve_place_cached(name: str) -> dict | None:
         return None
     if not hits:
         return None
-    return {"geometry": hits[0]["geojson"], "label": hits[0].get("display_name", name)}
+    # prefer an area (a campus, an airport) over a point or a street of the same name
+    hit = next((h for h in hits if h.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), hits[0])
+    return {"geometry": hit["geojson"], "label": hit.get("display_name", name)}
 
 
 def resolve_place(name: str) -> dict | None:
     """Named place in Berlin -> GeoJSON geometry (OpenStreetMap Nominatim; only the place name is sent)."""
     return _resolve_place_cached(name.strip().lower())
+
+
+# Selecting single buildings or a named site, shared by all building tools
+SELECTION_PROPS = {
+    "address": {"type": "string",
+                "description": "A Berlin street address ('Hauptstraße 123', 'Leinestr. 55'): just that building. "
+                               "Use whenever the question names an address."},
+    "place": {"type": "string",
+              "description": "A named site or institution in Berlin ('Charité Campus Mitte', 'Flughafen Tempelhof', "
+                             "'Rotes Rathaus'): the buildings on it. Not for districts (use districts)."},
+}
+_ADDRESS_RE = re.compile(r"^\s*(.*?)[\s,]*(\d+\s*[a-zA-Z]?)?\s*$")
+
+
+def _address_uuids(db: Session, q: str) -> tuple[list[str], str | None]:
+    """Buildings at a street address (emp.emblive street + house number, as the map's address search)."""
+    m = _ADDRESS_RE.match(q)
+    street = (m.group(1) if m else q).strip().lower()
+    street = re.sub(r"str\.?$", "straße", street).replace("strasse", "straße")
+    number = (m.group(2) or "").replace(" ", "").lower() if m else ""
+    if len(street) < 2:
+        return [], None
+    rows = db.execute(text("""
+        SELECT e.uuid, e.street_name FROM emp.emblive e
+        WHERE lower(e.street_name) LIKE :like AND lower(e.street_name) ~ :rx
+        ORDER BY e.street_name LIMIT 50"""),
+        {"like": f"%{street}%",
+         "rx": rf"(^|;\s*){re.escape(street)}" + (rf"\s*{re.escape(number)}([^0-9a-z]|$)" if number else "")}).all()
+    return [r.uuid for r in rows], (rows[0].street_name if rows else None)
+
+
+def selection_condition(db: Session, params: dict, address: str | None = None, place: str | None = None,
+                        geom: str = "b.geom") -> tuple[str | None, list[str], str | None]:
+    """(SQL condition, notes, error) restricting buildings to an address or a named site."""
+    if address:
+        uuids, label = _address_uuids(db, address)
+        if not uuids:
+            return None, [], f"Adresse '{address}' wurde im Gebäudebestand nicht gefunden"
+        params["sel_uuids"] = uuids
+        return "b.uuid = ANY(:sel_uuids)", [f"Adresse aufgelöst als: {label}" + (f" (+{len(uuids) - 1} weitere)" if len(uuids) > 1 else "")], None
+    if place:
+        hit = resolve_place(place)
+        if not hit:
+            return None, [], f"Ort '{place}' wurde in Berlin nicht gefunden"
+        params["sel_geojson"] = json.dumps(hit["geometry"])
+        g = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:sel_geojson), 4326), 25833)"
+        cond = (f"ST_Intersects({geom}, {g})" if hit["geometry"].get("type") in ("Polygon", "MultiPolygon")
+                else f"ST_DWithin({geom}, {g}, 30)")
+        return cond, [f"Ort aufgelöst als: {hit['label']}"], None
+    return None, [], None
 
 
 MAX_RESULTS = 500
@@ -332,7 +385,11 @@ FIND_BUILDINGS_SORT = {
     "cooling_actual": "cooling_actual_kwh",
     "electricity_cooling": "electricity_cooling_kwh",
     "year_built": "year_built_int",
+    "u_mean": "u_mean",
+    "u_wall": "u_wall",
+    "u_window": "u_window",
 }
+ENVELOPE_NOTE = "U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt."
 
 BUILDING_FUNCTION_PROP = {
     "type": "string",
@@ -386,7 +443,8 @@ FIND_BUILDINGS_SCHEMA = {
         "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'view' (default): drawn area or visible map. 'berlin': all of Berlin"},
         "near_place": {"type": "string", "description": "Named place in Berlin (e.g. 'Tiergarten'); use with max_distance_m"},
         "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
-        "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue"},
+        "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue; u_mean / u_wall / u_window = worst (highest) typical U-values ('schlechteste U-Werte')"},
+        **SELECTION_PROPS,
         "min_cooling_demand": {"type": "number", "description": "Minimum annual cooling demand in kWh"},
         "max_cooling_demand": {"type": "number", "description": "Maximum annual cooling demand in kWh"},
         **cooling.SCENARIO_PROPS,
@@ -597,6 +655,8 @@ def _execute_find_buildings(
     year: int | None = None,
     measures: list[str] | None = None,
     setpoint: float | None = None,
+    address: str | None = None,
+    place: str | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
@@ -607,7 +667,13 @@ def _execute_find_buildings(
     notes: list[str] = []
     sources = ["footprints", "building_params", "energymap_heating", "cooling_mockup"]
 
-    if near_place:
+    sel, sel_notes, sel_error = selection_condition(db, params, address, place)
+    if sel_error:
+        return {"error": sel_error}
+    notes += sel_notes
+    if sel:
+        conditions.append(sel)
+    elif near_place:
         place = resolve_place(near_place)
         if not place:
             return {"error": f"Ort '{near_place}' wurde in Berlin nicht gefunden"}
@@ -714,6 +780,8 @@ def _execute_find_buildings(
                 ({cooling.ANNUAL_MAX}) AS cooling_annual_max,
                 cb.kwh_m2a_std AS cooling_specific_base,
                 ({COOLING_CAPACITY_EXPR}) AS cooling_capacity_kw,
+                ({cooling.ELEC}) AS electricity_demand_cooling_kwh,
+                ({cooling.POWER}) AS electric_power_cooling_kw,
                 el.cons_c2r2 AS heating_demand,
                 pb."PrimaryUsageZoneType" AS usage_zone_type,
                 b.gfk,
@@ -730,6 +798,8 @@ def _execute_find_buildings(
                 cact.electricity_kwh_max AS electricity_cooling_max,
                 cact.capacity_kw_mean AS chiller_capacity_kw, cact.check_flags AS chiller_check,
                 ncon.length_m AS connection_length_m,
+                env.u_wall, env.u_wall_se, env.u_roof, env.u_roof_se, env.u_floor, env.u_floor_se,
+                env.u_window, env.u_window_se, env.u_mean, env.source AS envelope_source, env.envelope_type,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
@@ -747,7 +817,8 @@ def _execute_find_buildings(
             "properties": {
                 "bldg_uuid": row.bldg_uuid,
                 **{k: (round(float(getattr(row, k)), 1) if getattr(row, k) is not None else None)
-                   for k in ("cooling_annual", "cooling_annual_min", "cooling_annual_max", "cooling_capacity_kw")},
+                   for k in ("cooling_annual", "cooling_annual_min", "cooling_annual_max", "cooling_capacity_kw",
+                             "electricity_demand_cooling_kwh", "electric_power_cooling_kw")},
                 "heating_demand": row.heating_demand,
                 "usage_zone_type": row.usage_zone_type,
                 "building_function": row.building_function,
@@ -762,7 +833,9 @@ def _execute_find_buildings(
                 **{k: (float(getattr(row, k)) if getattr(row, k) is not None else None)
                    for k in ("cooling_actual_kwh", "cooling_actual_min", "cooling_actual_max", "electricity_cooling_kwh",
                              "electricity_cooling_min", "electricity_cooling_max", "chiller_capacity_kw",
-                             "connection_length_m")},
+                             "connection_length_m", "u_wall", "u_wall_se", "u_roof", "u_roof_se", "u_floor",
+                             "u_floor_se", "u_window", "u_window_se", "u_mean")},
+                "envelope_source": row.envelope_source,
                 "chiller_check": row.chiller_check or None,
             },
         }
@@ -800,6 +873,8 @@ def _execute_find_buildings(
             field("cooling_annual_min", "quantitative", "Kältebedarf min", "kWh/a"),
             field("cooling_annual_max", "quantitative", "Kältebedarf max", "kWh/a"),
             field("cooling_capacity_kw", "quantitative", "benötigte Kälteleistung", "kW"),
+            field("electricity_demand_cooling_kwh", "quantitative", "Kältestrom bei Deckung des Bedarfs", "kWh/a"),
+            field("electric_power_cooling_kw", "quantitative", "elektrische Leistung der Kälteerzeugung", "kW"),
             field("cooling_actual_kwh", "quantitative", "Kälteverbrauch (aus installierter Leistung, Abgleich)", "kWh/a"),
             field("cooling_actual_min", "quantitative", "Kälteverbrauch min", "kWh/a"),
             field("cooling_actual_max", "quantitative", "Kälteverbrauch max", "kWh/a"),
@@ -809,6 +884,16 @@ def _execute_find_buildings(
             field("electricity_cooling_max", "quantitative", "Kältestrom max", "kWh/a"),
             field("chiller_check", "nominal", "Zuordnung prüfen"),
             field("connection_length_m", "quantitative", "Anschluss an Straße", "m"),
+            field("u_mean", "quantitative", "mittlerer U-Wert (typisch)", "W/(m²K)"),
+            field("u_wall", "quantitative", "U-Wert Wand", "W/(m²K)"),
+            field("u_wall_se", "quantitative", "U-Wert Wand ±", "W/(m²K)"),
+            field("u_roof", "quantitative", "U-Wert Dach", "W/(m²K)"),
+            field("u_roof_se", "quantitative", "U-Wert Dach ±", "W/(m²K)"),
+            field("u_floor", "quantitative", "U-Wert Boden", "W/(m²K)"),
+            field("u_floor_se", "quantitative", "U-Wert Boden ±", "W/(m²K)"),
+            field("u_window", "quantitative", "U-Wert Fenster", "W/(m²K)"),
+            field("u_window_se", "quantitative", "U-Wert Fenster ±", "W/(m²K)"),
+            field("envelope_source", "nominal", "Quelle U-Werte"),
         ],
         [
             {k: (round(float(v), 1) if k in ("heating_demand", "kww_heat_demand") and v is not None else v)
@@ -827,7 +912,8 @@ def _execute_find_buildings(
                "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
                "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
                "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center, **sc},
-        notes=notes + [cooling.note(sc), "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme)."]
+        notes=notes + [cooling.note(sc), "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme).",
+                       ENVELOPE_NOTE]
               + ([cooling.ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
     )
 

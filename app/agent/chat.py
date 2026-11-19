@@ -52,13 +52,25 @@ Rechenzentren aus OpenStreetMap/PeeringDB (building_function 'Rechenzentrum', ni
 Für Gebäude mit erkannter Kälteanlage gibt es den Kälteverbrauch: geschätzt aus der installierten Leistung mit \
 Volllaststunden, dazu Kältestrom und installierte Kälteleistung (has_chiller, Metriken cooling_actual, electricity_cooling, \
 chiller_capacity), jeweils mit Spanne min–max. Nenne bei diesen Werten IMMER die Spanne und dass die Unsicherheit groß ist. \
-Der Kälteverbrauch ist ein Abgleich zum Kältebedarf, nicht dasselbe: Steht er im Ergebnis, nenne ihn zusätzlich zum Bedarf.
+Der Kälteverbrauch ist ein Abgleich zum Kältebedarf, nicht dasselbe: Steht er im Ergebnis (cooling_actual), nenne ihn IMMER zusätzlich zum Bedarf, mit Anzahl der Gebäude mit erkannter Anlage.
 Wie viel weniger Kältebedarf bestimmte Maßnahmen bringen, zeigt building_scenario_demand (compare_measures) je Gebäude \
 mit Einsparung in MWh/a und %.
+Für mehrere Szenarien auf einmal nutzt du cooling_scenarios: Entwicklung über die Jahre 2025–2050 („wie entwickelt \
+sich“, „bis 2045“, „in den nächsten 20 Jahren“), Klimaszenarien, Maßnahmen und ihre Kombinationen oder Sollwerte im \
+Vergleich, für ein Gebiet, eine Gruppe oder ein Gebäude; quantity='electricity' für den Kältestrom. Zum Einfärben aller \
+Gebäude nach einem Wert („färbe nach …“, „wie ist … verteilt“, „zeige das PV-Potenzial im Gebiet“) nutzt du \
+color_buildings. Kältestrom, wenn der Bedarf mit Kälteanlagen gedeckt wird, und elektrische Leistung sind Metriken \
+(electricity_demand_cooling, electric_power_cooling); Abwärme erkannter Anlagen ist waste_heat_actual bzw. \
+waste_heat_power_actual. aggregate_buildings mit group_by ['district'] oder ['planning_area'] zeigt die Gebiete auch als \
+Flächen auf der Karte. Eine Adresse wählst du mit address, eine benannte Einrichtung (Charité, Flughafen Tempelhof) mit \
+place.
+Typische U-Werte (Wand, Dach, Boden, Fenster, Mittel) je Gebäude nach Gebäudetyp und Baualter aus der NaiS-DB stehen in \
+find_buildings (sort_by u_mean für „schlechteste U-Werte“), color_buildings (u_mean, u_wall, u_window) und \
+aggregate_buildings (u_mean); sage dazu, dass es typische Werte sind und der Sanierungsstand unbekannt ist.
 Dir fehlen noch: simulierte Klimaszenarien und Maßnahmenwirkungen, Innenraumtemperaturen, Wärmebelastung, \
-Gesamtstrom und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kälte- und Wärmenetze, gemessene \
-Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, U-Werte und Sanierungsstand, Kältebedarf der \
-Rechenzentren. Braucht eine Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
+Gesamtstrom (außer Kältestrom) und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kälte- und Wärmenetze, gemessene \
+Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, tatsächlicher Sanierungsstand je Gebäude, \
+gemessener Kältebedarf der Rechenzentren. Braucht eine Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
 
 Regeln:
 - Antworte auf Deutsch, knapp und konkret.
@@ -67,8 +79,8 @@ erfinde niemals Werte.
 - Wenn "truncated" im Tool-Ergebnis true ist, weise darauf hin, dass es noch mehr Treffer gibt, als angezeigt werden.
 - Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
 aktuell sichtbaren Kartenausschnitt. Benannte Berliner Bezirke und ganz Berlin gehen mit aggregate_buildings und \
-monthly_profile (Parameter districts bzw. scope) sowie beim Baum-Attribut "Bezirk"; andere Ortsnamen (Kieze, \
-Straßen) kannst du nicht auflösen — erkläre das kurz statt zu raten.
+monthly_profile (Parameter districts bzw. scope) sowie beim Baum-Attribut "Bezirk"; Adressen und benannte \
+Einrichtungen über address bzw. place. Kieze ohne feste Grenze kannst du nicht auflösen — erkläre das kurz statt zu raten.
 - Wurde ein Punkt oder eine Linie gezeichnet und die Nutzerin nennt IRGENDEINEN Abstand (z.B. "im Abstand von \
 100m", "im Radius von 10m", "im Umkreis von 50 Metern", "in 1km Entfernung"), MUSST du diesen Wert immer als \
 buffer_distance_m mitgeben — das ist nicht optional. Rechne dabei immer in Meter um (1km = 1000, 0,5km = 500). \
@@ -92,11 +104,8 @@ scope='berlin' — sonst wird nur der sichtbare Kartenausschnitt durchsucht. Bei
 - Rufe pro Antwort genau ein Datenwerkzeug auf: find_* für einzelne Objekte, die übrigen für zusammengefasste Werte.
 - Die Darstellung (Karte, Diagramm, Tabelle) wählt die Anwendung selbst. Beschreibe das Ergebnis in 1–3 Sätzen mit \
 den wichtigsten Zahlen; nenne beim Kältebedarf das Szenario und dass es Annahmen sind.
-- Schließe jede Antwort mit einer kurzen Anschlussfrage, die die Nutzerin weiterbringt: z. B. ein anderes \
-Klimaszenario oder Jahr, eine weitere Maßnahme, ein anderes Gebiet, eine Aufteilung nach Nutzung oder Bezirk.
-- Schreibe danach in eine eigene letzte Zeile „VORSCHLAG: “ und die naheliegendste nächste Eingabe der Nutzerin, so \
-wie sie sie tippen würde (kurz, z. B. „Ja, mit starkem Klimawandel“). Diese Zeile wird nicht angezeigt, sondern als \
-Vorschlag ins Eingabefeld geschrieben.
+- Jede Antwort endet mit einer Anschlussfrage im Antworttext (Pflicht, auch bei kurzen Antworten). Sie sagt zuerst, was gerechnet wurde, und bietet dann den naheliegenden nächsten Schritt an, z. B. „Das ist für 2030 gerechnet. Willst du das auch für 2045 wissen?“ oder „Das sind alle Gebäude in Spandau. Soll ich nach Nutzung aufteilen?“. Achte auf die Richtung: ein späteres Jahr oder stärkerer Klimawandel erhöht den Kältebedarf, Maßnahmen und ein höherer Sollwert senken ihn.
+- Schreibe danach in eine eigene letzte Zeile „VORSCHLAG: “ und die Antwort, die die Nutzerin auf deine Anschlussfrage am wahrscheinlichsten gibt, als ganzen kurzen Satz in ihren Worten (z. B. „Ja, zeig mir das für 2045.“). Keine Stichworte wie „Spandau, stark“. Diese Zeile wird nicht angezeigt, sondern grau ins Eingabefeld geschrieben.
 """
 
 # the suggestion line the model ends its answer with (see the last rule of the prompt)
@@ -141,6 +150,8 @@ def _for_llm(result: dict, lang: str = "de") -> dict:
     MAX_ROWS_FOR_LLM rows (enough to describe it, without flooding the context)."""
     if "summary_for_llm" in result:
         return result["summary_for_llm"]
+    if "kind" not in result and isinstance(result.get("frame"), dict):  # frame + map layer, no own summary
+        result = result["frame"]
     if "kind" in result:
         # on the English page the model must see English category values and notes, or it quotes them in German
         result = localize(result, lang)

@@ -70,6 +70,19 @@ SOURCES: dict[str, dict] = {
         "license": None,
         "estimated": False,
     },
+    "envelope_nais": {
+        "label": "Typische U-Werte nach Gebäudetyp und Baualter (NaiS-DB: TABULA DE, IWU-NWG)",
+        "tables": ["core_bldg.envelope_building", "core_bldg.envelope_u_tabula", "core_bldg.envelope_u_nwg",
+                   "core_bldg.envelope_gfk_group"],
+        "status": "2026-11-19 geladen (KIT-IAI SDM_NaiS-DB, NaiS DB 1.4; TABULA 2017, IWU-NWG 2.2)",
+        "method": "Wohnen: TABULA-Typgebäude Ist-Zustand nach Größenklasse und Baualter; Nichtwohnen: flächengewichtete "
+                  "Mittelwerte der IWU-NWG-Stichprobe je Hauptfunktion und Baujahresklasse mit Standardfehler; "
+                  "Zuordnung über die ALKIS-Gebäudefunktion",
+        "accuracy": "typische Werte, nicht gebäudescharf; Sanierungsstand unbekannt",
+        "reference_area": None,
+        "license": "MIT (SDM_NaiS-DB)",
+        "estimated": True,
+    },
     "pv_potential": {
         "label": "Solarpotenzial Berlin (Solarrechner), geeignete Dachflächen je Gebäude",
         "tables": ["core_bldg.pv_potential_building"],

@@ -56,6 +56,31 @@ ANNUAL_MAX = demand_expr("max")
 # Required cooling capacity in kW: demand / full-load hours of the usage group (assumption, no oversizing)
 CAPACITY = f"({ANNUAL} / NULLIF(cb.vlh_mean, 0))"
 AREA = "cb.ngf_m2"
+# Electricity if the demand is met by compression chillers: demand / EER of the usage group (assumption).
+# The low bound pairs the low demand with the high EER and vice versa.
+ELEC = f"({ANNUAL} / NULLIF(cb.eer_mean, 0))"
+ELEC_MIN = f"({ANNUAL_MIN} / NULLIF(cb.eer_max, 0))"
+ELEC_MAX = f"({ANNUAL_MAX} / NULLIF(cb.eer_min, 0))"
+POWER = f"({CAPACITY} / NULLIF(cb.eer_mean, 0))"
+# Waste heat a chiller rejects = cooling + its electricity
+WASTE = f"({ANNUAL} + {ELEC})"
+
+
+def total(groups: list, f: dict, bound: str) -> float:
+    """Scenario total from sums per (measures_apply, setpoint_base_c) group: the same arithmetic as demand_expr,
+    applied to group sums (s_min/s_std/s_max), so any number of scenarios costs one query."""
+    out = 0.0
+    for g in groups:
+        v = float(getattr(g, f"s_{bound}") or 0)
+        if g.ma:
+            v *= float(f[f"m_{bound}"])
+            if f["sp"] is not None and g.sb is not None:
+                k = float(f["sp"]) - float(g.sb)
+                a = (1 + float(f["sp_pct_min"]) / 100) ** k
+                b = (1 + float(f["sp_pct_max"]) / 100) ** k
+                v *= {"std": (1 + float(f["sp_pct_std"]) / 100) ** k, "min": min(a, b), "max": max(a, b)}[bound]
+        out += v
+    return out * float(f["c_cool"])
 
 
 def scenario(climate=None, year=None, measures=None, setpoint=None) -> dict:

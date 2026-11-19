@@ -14,8 +14,8 @@ from . import cooling
 from .frames import field, frame
 from .tools import (BUILDING_FUNCTION_PROP, EXTRA_FILTER_PROPS,
                     CHILLER_CAPACITY_NOTE, COOLING_ACTUAL_NOTE, KWW_JOINS, OWNER_EXPR, extra_conditions, extra_sources,
-                    PROCESS_HEAT_PROP, _build_search_geom_expr, building_function_condition,
-                    process_heat_condition, usage_condition)
+                    PROCESS_HEAT_PROP, SELECTION_PROPS, _build_search_geom_expr, building_function_condition,
+                    process_heat_condition, selection_condition, usage_condition)
 
 MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
@@ -48,6 +48,12 @@ GROUPS = {
     "district": ("d.name", field("district", "nominal", "Bezirk")),
     "construction_period": (PERIOD_EXPR, field("construction_period", "ordinal", "Baualtersklasse")),
     "postcode": ("e.postcode::text", field("postcode", "nominal", "Postleitzahl")),
+    "planning_area": ("b.mostly_in_pca::text", field("planning_area", "nominal", "Planungsraum (Nr.)")),
+}
+# groups that can be drawn as areas on the map: key -> SQL returning (key, geom 25833)
+GROUP_GEOMS = {
+    "district": "SELECT name AS k, geom FROM emc.district WHERE name = ANY(:keys)",
+    "planning_area": "SELECT pca_id::text AS k, geom FROM emc.pca WHERE pca_id::text = ANY(:keys)",
 }
 
 # metric -> (SQL aggregate, field, source ids). heating_specific is area-weighted (sum demand / sum area),
@@ -83,6 +89,23 @@ METRICS = {
     "chiller_capacity": ("SUM(cact.capacity_kw_mean)",
                          field("chiller_capacity", "quantitative", "Kälteleistung erkannter Anlagen (geschätzt)", "kW"),
                          ["chillers", "chiller_estimate"]),
+    "electricity_demand_cooling": (f"SUM({cooling.ELEC})",
+                                   field("electricity_demand_cooling", "quantitative",
+                                         "Kältestrom bei Deckung des Bedarfs", "kWh/a"), ["cooling_mockup"]),
+    "electric_power_cooling": (f"SUM({cooling.POWER})",
+                               field("electric_power_cooling", "quantitative", "elektrische Leistung der Kälteerzeugung",
+                                     "kW"), ["cooling_mockup"]),
+    "waste_heat_demand": (f"SUM({cooling.WASTE})",
+                          field("waste_heat_demand", "quantitative", "Abwärme der Kälteerzeugung (aus Bedarf)", "kWh/a"),
+                          ["cooling_mockup"]),
+    "waste_heat_actual": ("SUM(cact.cooling_kwh_mean + cact.electricity_kwh_mean)",
+                          field("waste_heat_actual", "quantitative", "Abwärme erkannter Kälteanlagen", "kWh/a"),
+                          ["chillers", "chiller_estimate"]),
+    "waste_heat_power_actual": ("SUM(cact.capacity_kw_mean * (1 + cact.electricity_kwh_mean / NULLIF(cact.cooling_kwh_mean, 0)))",
+                                field("waste_heat_power_actual", "quantitative", "Abwärmeleistung erkannter Kälteanlagen",
+                                      "kW"), ["chillers", "chiller_estimate"]),
+    "u_mean": ("AVG(env.u_mean)", field("u_mean", "quantitative", "mittlerer U-Wert (typisch, Mittel der Gebäude)", "W/(m²K)"),
+               ["envelope_nais"]),
     "heated_area": ('SUM(pb."Heated area")', field("heated_area", "quantitative", "beheizte Fläche", "m²"),
                     ["building_params"]),
     "building_count": ("COUNT(*)", field("building_count", "quantitative", "Anzahl Gebäude", "Gebäude"),
@@ -90,10 +113,17 @@ METRICS = {
 }
 
 # Metrics from detected chillers only count buildings that have such a unit.
-ACTUAL_METRICS = {"cooling_actual", "electricity_cooling", "chiller_capacity"}
+ACTUAL_METRICS = {"cooling_actual", "electricity_cooling", "chiller_capacity", "waste_heat_actual",
+                  "waste_heat_power_actual"}
+# metrics computed from the cooling demand mock-up, i.e. depending on the scenario
+SCENARIO_METRICS = {"cooling_demand", "cooling_specific", "cooling_capacity", "electricity_demand_cooling",
+                    "electric_power_cooling", "waste_heat_demand"}
 # min-max bands: of the chiller estimates, and of the cooling demand assumptions
 METRIC_BANDS = {
     "cooling_demand": (f"SUM({cooling.ANNUAL_MIN})", f"SUM({cooling.ANNUAL_MAX})"),
+    "electricity_demand_cooling": (f"SUM({cooling.ELEC_MIN})", f"SUM({cooling.ELEC_MAX})"),
+    "waste_heat_actual": ("SUM(cact.cooling_kwh_min + cact.electricity_kwh_min)",
+                          "SUM(cact.cooling_kwh_max + cact.electricity_kwh_max)"),
     "cooling_actual": ("SUM(cact.cooling_kwh_min)", "SUM(cact.cooling_kwh_max)"),
     "electricity_cooling": ("SUM(cact.electricity_kwh_min)", "SUM(cact.electricity_kwh_max)"),
     "chiller_capacity": ("SUM(cact.capacity_kw_min)", "SUM(cact.capacity_kw_max)"),
@@ -102,12 +132,14 @@ METRIC_BANDS = {
 
 CHECK_SQL = ", SUM(cact.cooling_kwh_mean) AS act, COUNT(cact.uuid) AS n_act"
 CHECK_FIELDS = [field("cooling_actual", "quantitative", "Kälteverbrauch erkannter Anlagen (Abgleich)", "kWh/a"),
-                field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude")]
+                field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude"),
+                field("coverage_pct", "quantitative", "Anteil des Bedarfs, den erkannte Anlagen decken", "%")]
 
 
 def _check_values(r) -> dict:
-    return {"cooling_actual": round(float(r.act), 1) if r.act is not None else None,
-            "buildings_with_chiller": r.n_act}
+    act = float(r.act) if r.act is not None else None
+    return {"cooling_actual": round(act, 1) if act is not None else None, "buildings_with_chiller": r.n_act,
+            "coverage_pct": round(100 * act / float(r.value), 1) if act is not None and r.value else None}
 
 
 def _band_fields(metric: str, metric_field: dict) -> list[dict]:
@@ -121,6 +153,7 @@ _FILTER_PROPS = {
     "process_heat": PROCESS_HEAT_PROP,
     **EXTRA_FILTER_PROPS,
     "postcodes": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin postcodes; overrides the map view."},
+    **SELECTION_PROPS,
     "min_year_built": {"type": "integer", "description": "Earliest year of construction"},
     "max_year_built": {"type": "integer", "description": "Latest year of construction"},
     "districts": {
@@ -147,7 +180,12 @@ AGGREGATE_BUILDINGS_SCHEMA = {
                                   "area-weighted), cooling_demand (annual kWh, assumption per building function and "
                                   "age class in a scenario; comes with the consumption of detected chillers as cross-check), "
                                   "cooling_specific (kWh per m² and year), cooling_capacity (required kW = demand / "
-                                  "full-load hours), heated_area, building_count"},
+                                  "full-load hours), electricity_demand_cooling (electricity if the demand is met by "
+                                  "chillers: demand / EER, 'Strombedarf für Kühlung'), electric_power_cooling (kW), "
+                                  "waste_heat_demand (heat rejected by chillers meeting the demand), waste_heat_actual / "
+                                  "waste_heat_power_actual (Abwärme of detected chillers, kWh / kW), u_mean (mean typical "
+                                  "U-value of the buildings, NaiS-DB), heated_area, "
+                                  "building_count"},
         "group_by": {"type": "array", "items": {"type": "string", "enum": list(GROUPS)}, "minItems": 0,
                      "maxItems": 2,
                      "description": "Zero, one or two grouping levels, outer first, e.g. ['district', 'usage_type']. "
@@ -219,6 +257,55 @@ MONTHLY_PROFILE_SCHEMA = {
     "required": [],
 }
 
+COOLING_SCENARIOS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "compare": {"type": "string", "enum": ["years", "climates", "measures", "setpoints"],
+                    "description": "years: development over the years 2025-2050 ('wie entwickelt sich ... bis 2045', "
+                                   "time series; with climate: only that scenario, without: all three); climates: low/"
+                                   "medium/strong climate change in one year; measures: no measures vs. each measure and "
+                                   "combinations ('welche Maßnahme(nkombination) reduziert am meisten', 'Potenzial "
+                                   "Nachtkühlung'); setpoints: 22/24/26 °C."},
+        "quantity": {"type": "string", "enum": ["demand", "electricity"],
+                     "description": "demand (cooling demand, default) or electricity (Kältestrom if met by chillers)"},
+        "years": {"type": "array", "items": {"type": "integer"},
+                  "description": "With compare=years: the years, default 2025, 2030, ..., 2050"},
+        **cooling.SCENARIO_PROPS,
+        **_FILTER_PROPS,
+    },
+    "required": ["compare"],
+}
+
+COLOR_METRICS = {
+    # metric -> (SQL value per building, label, unit, ramp, sources)
+    "cooling_demand": (cooling.ANNUAL, "Kältebedarf", "kWh/a", "cool", ["cooling_mockup"]),
+    "cooling_specific": (f"{cooling.ANNUAL} / NULLIF({cooling.AREA}, 0)", "spez. Kältebedarf", "kWh/(m²·a)", "cool",
+                         ["cooling_mockup"]),
+    "cooling_capacity": (cooling.CAPACITY, "benötigte Kälteleistung", "kW", "cool", ["cooling_mockup"]),
+    "cooling_actual": ("cact.cooling_kwh_mean", "Kälteverbrauch (aus installierter Leistung)", "kWh/a", "cool",
+                       ["chillers", "chiller_estimate"]),
+    "electricity_demand_cooling": (cooling.ELEC, "Kältestrom bei Deckung des Bedarfs", "kWh/a", "cool", ["cooling_mockup"]),
+    "heating_specific": ("e.cons_c2r2 / NULLIF(e.nrf_area, 0)", "spez. Heizwärmebedarf", "kWh/(m²·a)", "warm",
+                         ["energymap_heating"]),
+    "kww_heat_demand": ("kh.heat_dhw_kwh_a", "Wärmebedarf KWW (Heizung + Warmwasser)", "kWh/a", "warm", ["kww_heat"]),
+    "pv_potential_kwp": ("pvp.potential_kwp", "PV-Potenzial Dach", "kWp", "warm", ["pv_potential"]),
+    "u_mean": ("env.u_mean", "mittlerer U-Wert (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
+    "u_wall": ("env.u_wall", "U-Wert Wand (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
+    "u_window": ("env.u_window", "U-Wert Fenster (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
+}
+
+COLOR_BUILDINGS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "metric": {"type": "string", "enum": list(COLOR_METRICS),
+                   "description": "Value the buildings are coloured by ('färbe die Gebäude nach ...', 'wie ist ... "
+                                  "verteilt', 'zeige das PV-Potenzial im Gebiet')."},
+        **cooling.SCENARIO_PROPS,
+        **_FILTER_PROPS,
+    },
+    "required": ["metric"],
+}
+
 BUILDING_SCENARIO_SCHEMA = {
     "type": "object",
     "properties": {
@@ -228,6 +315,7 @@ BUILDING_SCENARIO_SCHEMA = {
                                             "by users), nachtlueftung_auto (automatic night ventilation)."},
         **{k: v for k, v in cooling.SCENARIO_PROPS.items() if k != "measures"},
         "top_n": {"type": "integer", "description": "Number of buildings with the highest cooling demand, default 10, max 500"},
+        **SELECTION_PROPS,
         "districts": _FILTER_PROPS["districts"],
         "scope": _FILTER_PROPS["scope"],
     },
@@ -257,6 +345,7 @@ LINE_DENSITY_SCHEMA = {
         "min_length_m": {"type": "number",
                          "description": "Leave out sections shorter than this (m). Use 50 for 'wo lohnt sich ein Netz', "
                                         "so very short sections don't dominate (with group_by street: 200)."},
+        **cooling.SCENARIO_PROPS,
         "min_buildings": {"type": "integer",
                           "description": "Leave out sections/streets with fewer connected buildings. Use 5 for "
                                          "'wo lohnt sich ein Netz', so a single large building is not called a network."},
@@ -268,6 +357,27 @@ LINE_DENSITY_SCHEMA = {
 }
 
 TOOLS = [
+    {
+        "name": "cooling_scenarios",
+        "description": (
+            "Cooling demand (or chiller electricity) of an area, a group of buildings or one building under several "
+            "scenarios at once: development over the years 2025-2050 (line chart), climate scenarios compared, "
+            "measures and their combinations compared (saving in %), or setpoints compared. Use for 'wie entwickelt "
+            "sich', 'bis 2045', 'welche Maßnahme bringt am meisten', 'Potenzial Nachtlüftung' in an area, and for "
+            "one building ('Charité in den nächsten 20 Jahren': place) or address."
+        ),
+        "input_schema": COOLING_SCENARIOS_SCHEMA,
+    },
+    {
+        "name": "color_buildings",
+        "description": (
+            "Colour every building in the area by a value on the map (choropleth with legend): cooling demand, "
+            "specific cooling demand, required capacity, consumption of detected chillers, chiller electricity, "
+            "specific heating demand, KWW heat demand, rooftop PV potential. Use for 'färbe die Gebäude nach ...', "
+            "'wie ist der Kühlbedarf im Gebiet verteilt', 'zeige das PV-Potenzial im Gebiet'."
+        ),
+        "input_schema": COLOR_BUILDINGS_SCHEMA,
+    },
     {
         "name": "aggregate_buildings",
         "description": (
@@ -357,7 +467,8 @@ MISSING = {
     "other_city": ("Gebäudedaten außerhalb Berlins", "Stuttgart und Korbach folgen im Projekt, weitere Städte sind nicht vorgesehen"),
     "ownership": ("Eigentum außer dem Land Berlin (Bund, Private, Gesellschaften, Wohnungsbaugesellschaften) je Gebäude",
                   "landeseigene Grundstücke sind da (Filter owner), andere Eigentümergruppen gibt es nur als Anteil je Planungsraum"),
-    "building_physics": ("U-Werte und Sanierungsstand je Gebäude", "sind noch nicht im Datenbestand"),
+    "building_physics": ("Tatsächlicher Sanierungsstand und gemessene U-Werte je Gebäude",
+                         "sind nicht im Datenbestand; typische U-Werte nach Gebäudetyp und Baualter (NaiS-DB) sind da"),
     "data_centers": ("Vollständige Liste und Kältebedarf der Rechenzentren",
                      "bekannte Standorte aus OpenStreetMap und PeeringDB sind da (building_function 'Rechenzentrum'), ihr Kältebedarf ist eine Annahme (Mockup)"),
 }
@@ -399,8 +510,14 @@ def _area_sql(db_params: dict, bbox: str | None, polygon: dict | None, districts
 
 
 def _filter_sql(params: dict, usage_zone_type, min_year_built, max_year_built, db: Session | None = None,
-                building_function: str | None = None, process_heat: bool | None = None, **extra) -> str:
+                building_function: str | None = None, process_heat: bool | None = None,
+                address: str | None = None, place: str | None = None, **extra) -> str:
     cond = extra_conditions(params, **extra)
+    if address or place:
+        sel, _, error = selection_condition(db, params, address, place)
+        if error:
+            raise LookupError(error)
+        cond.append(sel)
     if usage_zone_type:
         cond.append(usage_condition(usage_zone_type, params))
     if building_function and db is not None:
@@ -484,13 +601,16 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
     query = {**extra, "metric": metric, "group_by": group_by, "districts": districts, "scope": scope, "postcodes": postcodes,
              "usage_zone_type": usage_zone_type, "min_year_built": min_year_built, "max_year_built": max_year_built,
              "top_n": top_n, "share_of_total": share_of_total, "building_function": building_function,
-             "process_heat": process_heat, **(sc if metric.startswith("cooling_") else {})}
+             "process_heat": process_heat, **(sc if metric in SCENARIO_METRICS else {})}
     cooling_notes = ([cooling.note(sc)] + ([cooling.ACTUAL_NOTE] if metric == "cooling_demand" else [])
+                     + (["Kältestrom = Kältebedarf / Leistungszahl der Kälteerzeugung je Nutzung (luftgekühlt 2,7, "
+                         "wassergekühlt 3,9; Annahme), wenn der ganze Bedarf mit Kälteanlagen gedeckt wird."]
+                        if metric in ("electricity_demand_cooling", "electric_power_cooling", "waste_heat_demand") else [])
                      + (["Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme)."]
                         if metric == "cooling_capacity" else []))
     if not group_by:
         notes = ([COOLING_ACTUAL_NOTE] if metric in ACTUAL_METRICS else
-                 cooling_notes if metric.startswith("cooling_") else [])
+                 cooling_notes if metric in SCENARIO_METRICS else [])
         return _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where_area, where_filter, params,
                              share_of_total, query, notes)
     keys = [GROUPS[g][0] for g in group_by]
@@ -535,10 +655,21 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
         notes.append("Keine Gebäude in diesem Gebiet im Datenbestand. Vorhanden ist derzeit nur Berlin.")
     elif metric in ACTUAL_METRICS:
         notes.append(COOLING_ACTUAL_NOTE)
-    elif metric.startswith("cooling_"):
+    elif metric in SCENARIO_METRICS:
         notes += cooling_notes
-    return frame("aggregate", fields, out, sources, hierarchy=group_by if len(group_by) > 1 else None,
-                 total=total_groups, query=query, notes=notes)
+    elif metric == "u_mean":
+        notes.append("U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt.")
+    fr = frame("aggregate", fields, out, sources, hierarchy=group_by if len(group_by) > 1 else None,
+               total=total_groups, query=query, notes=notes)
+    if len(group_by) == 1 and group_by[0] in GROUP_GEOMS and out:
+        values = {r[group_by[0]]: r[metric] for r in out if r[metric] is not None}
+        geoms = db.execute(text(f"SELECT k, ST_AsGeoJSON(ST_Transform(ST_SimplifyPreserveTopology(geom, 5), 4326), 6) AS g "
+                                f"FROM ({GROUP_GEOMS[group_by[0]]}) x"), {"keys": list(values)}).all()
+        features = [{"type": "Feature", "geometry": json.loads(g.g), "properties": {group_by[0]: g.k, "value": values[g.k]}}
+                    for g in geoms if g.k in values]
+        if features:
+            return {"layer": "cells", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr}
+    return fr
 
 
 def monthly_profile(db: Session, bbox: str | None, polygon: dict | None = None, *, group_by: str | None = None,
@@ -651,10 +782,153 @@ def density_grid(db: Session, bbox: str | None, polygon: dict | None = None, *, 
             "summary_for_llm": {"cells": len(out), "highest": out[0] if out else None, "unit": unit, "metric": label}}
 
 
+def _scenario_groups(db: Session, bbox, polygon, quantity: str, districts, scope, postcodes, usage_zone_type,
+                     min_year_built, max_year_built, building_function, process_heat, **extra):
+    """Sums of the base demand per (measures_apply, setpoint_base_c) for the requested buildings, plus the consumption
+    of detected chillers in them (cross-check)."""
+    params: dict = {}
+    join, where_area = _area_sql(params, bbox, polygon, districts, scope, False, postcodes)
+    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db, building_function,
+                               process_heat, **extra)
+    div = {"min": "/ NULLIF(cb.eer_max, 0)", "std": "/ NULLIF(cb.eer_mean, 0)", "max": "/ NULLIF(cb.eer_min, 0)"} \
+        if quantity == "electricity" else {"min": "", "std": "", "max": ""}
+    groups = db.execute(text(f"""
+        SELECT cb.measures_apply AS ma, cb.setpoint_base_c AS sb,
+               SUM(cb.kwh_min {div['min']}) AS s_min, SUM(cb.kwh_std {div['std']}) AS s_std,
+               SUM(cb.kwh_max {div['max']}) AS s_max, COUNT(*) AS n,
+               SUM(cact.cooling_kwh_mean) AS act, COUNT(cact.uuid) AS n_act
+        {_BASE} {join}
+        WHERE cb.uuid IS NOT NULL {where_area} {where_filter}
+        GROUP BY 1, 2"""), params).all()
+    return groups
+
+
+def cooling_scenarios(db: Session, bbox: str | None, polygon: dict | None = None, *, compare: str = "years",
+                      quantity: str = "demand", years: list[int] | None = None, climate: str | None = None,
+                      year: int | None = None, measures: list[str] | None = None, setpoint: float | None = None,
+                      districts: list[str] | None = None, scope: str | None = None, postcodes: list[str] | None = None,
+                      usage_zone_type: str | None = None, min_year_built: int | None = None,
+                      max_year_built: int | None = None, building_function: str | None = None,
+                      process_heat: bool | None = None, **extra) -> dict:
+    quantity = "electricity" if quantity == "electricity" else "demand"
+    base = cooling.scenario(climate, year, measures, setpoint)
+    groups = _scenario_groups(db, bbox, polygon, quantity, districts, scope, postcodes, usage_zone_type, min_year_built,
+                              max_year_built, building_function, process_heat, **extra)
+    n = sum(g.n for g in groups)
+    act = sum(float(g.act or 0) for g in groups)
+    n_act = sum(g.n_act for g in groups)
+    label = "Kältebedarf" if quantity == "demand" else "Kältestrom bei Deckung des Bedarfs"
+
+    def values(sc):
+        f = cooling.bind(db, {}, sc)
+        return {b: round(cooling.total(groups, f, b) / 1000, 1) for b in ("min", "std", "max")}
+
+    query = {"compare": compare, "quantity": quantity, **base, "districts": districts, "scope": scope,
+             "usage_zone_type": usage_zone_type, "building_function": building_function, **extra}
+    notes = []
+    if compare == "years":
+        yrs = sorted({max(2025, min(int(y), 2050)) for y in (years or range(2025, 2051, 5))})
+        climates = [climate] if climate in cooling.CLIMATES else list(cooling.CLIMATES)
+        rows = []
+        for cl in climates:
+            for y in yrs:
+                v = values({**base, "climate": cl, "year": y})
+                rows.append({"year": y, "year_label": str(y), "climate": cooling.CLIMATES[cl],
+                             "value": v["std"], "value_min": v["min"], "value_max": v["max"]})
+        fields = [field("year", "temporal", "Jahr")] + ([field("climate", "nominal", "Klimaszenario")] if len(climates) > 1 else []) \
+            + [field("value", "quantitative", label, "MWh/a"), field("value_min", "quantitative", "min", "MWh/a"),
+               field("value_max", "quantitative", "max", "MWh/a")]
+        kind = "series"
+        notes.append(f"Entwicklung {yrs[0]}–{yrs[-1]}; sonst wie {cooling.label(base).split(', ', 2)[2]}. Annahmen, keine Simulation.")
+    else:
+        if compare == "climates":
+            scs = [(cooling.CLIMATES[c], {**base, "climate": c}) for c in cooling.CLIMATES]
+            key = field("scenario", "ordinal", "Klimaszenario")
+        elif compare == "setpoints":
+            scs = [("Sollwert nach Gebäudefunktion", {**base, "setpoint": None})] + \
+                  [(f"{sp} °C", {**base, "setpoint": float(sp)}) for sp in cooling.SETPOINTS]
+            key = field("scenario", "ordinal", "Sollwert")
+        else:  # measures
+            from itertools import combinations
+            ms = cooling.MEASURES
+            combos = [()] + [c for k in (1, 2, 3) for c in combinations(ms, k)]
+            scs = [((" + ".join(cooling.MEASURE_LABEL[m] for m in c) or "ohne Maßnahmen"), {**base, "measures": list(c)})
+                   for c in combos]
+            key = field("scenario", "nominal", "Maßnahmen")
+        rows = []
+        for name, sc in scs:
+            v = values(sc)
+            rows.append({"scenario": name, "value": v["std"], "value_min": v["min"], "value_max": v["max"]})
+        ref = rows[0]["value"]
+        for r in rows:
+            r["change_pct"] = round(100 * (r["value"] - ref) / ref, 1) if ref else None
+        fields = [key, field("value", "quantitative", label, "MWh/a"), field("value_min", "quantitative", "min", "MWh/a"),
+                  field("value_max", "quantitative", "max", "MWh/a"),
+                  field("change_pct", "quantitative", f"Änderung gegenüber {rows[0]['scenario']}", "%")]
+        kind = "aggregate"
+        notes.append(f"Sonst wie {cooling.label(base)}. Annahmen, keine Simulation.")
+    if quantity == "electricity":
+        notes.append("Kältestrom = Kältebedarf / Leistungszahl der Kälteerzeugung je Nutzung (luftgekühlt 2,7, "
+                     "wassergekühlt 3,9; Annahme), wenn der ganze Bedarf mit Kälteanlagen gedeckt wird.")
+    if n_act:
+        notes.append(f"Abgleich: Kälteverbrauch erkannter Anlagen heute {round(act / 1000):,} MWh/a an {n_act} Gebäuden."
+                     .replace(",", "."))
+    fr = frame(kind, fields, rows, ["cooling_mockup", "building_params"] + (["chillers", "chiller_estimate"] if n_act else []),
+               total=len(rows), query=query, notes=notes)
+    if n == 0:
+        fr["notes"] = ["Keine beheizten Gebäude mit Kältebedarf in dieser Auswahl."]
+    return fr
+
+
+def color_buildings(db: Session, bbox: str | None, polygon: dict | None = None, *, metric: str = "cooling_demand",
+                    climate: str | None = None, year: int | None = None, measures: list[str] | None = None,
+                    setpoint: float | None = None, districts: list[str] | None = None, scope: str | None = None,
+                    postcodes: list[str] | None = None, usage_zone_type: str | None = None,
+                    min_year_built: int | None = None, max_year_built: int | None = None,
+                    building_function: str | None = None, process_heat: bool | None = None, **extra) -> dict:
+    if metric not in COLOR_METRICS:
+        return {"error": f"unknown metric {metric}"}
+    expr, label, unit, ramp, sources = COLOR_METRICS[metric]
+    sc = cooling.scenario(climate, year, measures, setpoint)
+    params: dict = {"cap": 40000}
+    cooling.bind(db, params, sc)
+    join, where_area = _area_sql(params, bbox, polygon, districts, scope, False, postcodes)
+    where_filter = _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db, building_function,
+                               process_heat, **extra)
+    rows = db.execute(text(f"""
+        SELECT b.uuid, {expr} AS v, b.namlag, b.hnr, kg.gfk_name AS bf
+        {_BASE} {join}
+        WHERE {expr} IS NOT NULL AND {expr} > 0 {where_area} {where_filter}
+        ORDER BY v DESC LIMIT :cap"""), params).all()
+    features = [{"type": "Feature", "geometry": None, "properties": {"bldg_uuid": r.uuid, "value": round(float(r.v), 1)}}
+                for r in rows]
+    top = [{"rank": k + 1, "bldg_uuid": r.uuid,
+            "address": r.namlag if r.namlag and r.hnr and r.namlag.endswith(r.hnr) else " ".join(x for x in (r.namlag, r.hnr) if x) or None,
+            "building_function": r.bf, "value": round(float(r.v), 1)} for k, r in enumerate(rows[:50])]
+    vals = sorted(float(r.v) for r in rows)
+    q = (lambda p: round(vals[int(p * (len(vals) - 1))], 1)) if vals else (lambda p: None)
+    notes = [f"{len(rows)} Gebäude eingefärbt" + (" (Obergrenze erreicht)" if len(rows) == params["cap"] else "")
+             + f"; Median {q(0.5)}, 10 %: {q(0.1)}, 90 %: {q(0.9)} {unit}."]
+    if metric.startswith("cooling") or metric == "electricity_demand_cooling":
+        notes.append(cooling.note(sc) if metric != "cooling_actual" else cooling.ACTUAL_NOTE)
+    if metric.startswith("u_"):
+        notes.append("U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt.")
+    fr = frame("features", [field("rank", "ordinal", "Rang"), field("bldg_uuid", "id", "Gebäude-ID"),
+                            field("address", "nominal", "Adresse"), field("building_function", "nominal", "Gebäudefunktion (ALKIS)"),
+                            field("value", "quantitative", label, unit)],
+               top, ["footprints", *sources], total=len(rows),
+               query={"metric": metric, **sc, "districts": districts, "scope": scope, **extra}, notes=notes)
+    fr["geo"] = True
+    return {"layer": f"building_values_{ramp}", "geojson": {"type": "FeatureCollection", "features": features},
+            "frame": fr, "summary_for_llm": {"buildings": len(rows), "metric": label, "unit": unit, "median": q(0.5),
+                                             "p10": q(0.1), "p90": q(0.9), "highest": top[:5], "notes": notes}}
+
+
 def building_scenario_demand(db: Session, bbox: str | None, polygon: dict | None = None, *,
                              compare_measures: list[str] | None = None, climate: str | None = None,
                              year: int | None = None, setpoint: float | None = None, top_n: int | None = None,
-                             districts: list[str] | None = None, scope: str | None = None, **_) -> dict:
+                             districts: list[str] | None = None, scope: str | None = None, address: str | None = None,
+                             place: str | None = None, **_) -> dict:
     compare = [m for m in (compare_measures or []) if m in cooling.MEASURES]
     std = cooling.scenario(climate, year, None, setpoint)
     # without = the scenario's measures minus the asked ones; with = plus the asked ones
@@ -663,6 +937,7 @@ def building_scenario_demand(db: Session, bbox: str | None, polygon: dict | None
     top = max(1, min(int(top_n or 10), 500))
     params: dict = {"top": top}
     join, where_area = _area_sql(params, bbox, polygon, districts, scope, False)
+    where_area += _filter_sql(params, None, None, None, db, address=address, place=place)
     cooling.bind(db, params, sc_without)
     # measures don't act on data centres and cold stores (process cooling): rank only buildings where they can act
     rows = db.execute(text(f"""
@@ -670,7 +945,7 @@ def building_scenario_demand(db: Session, bbox: str | None, polygon: dict | None
                {cooling.ANNUAL} AS v_std, {cooling.ANNUAL_MIN} AS v_min, {cooling.ANNUAL_MAX} AS v_max,
                ST_AsGeoJSON(ST_Transform(b.geom, 4326), 6) AS geom
         {_BASE} {join}
-        WHERE cb.measures_apply {where_area}
+        WHERE {"true" if (address or place) else "cb.measures_apply"} {where_area}
         ORDER BY v_std DESC NULLS LAST LIMIT :top"""), params).all()
     p2 = cooling.bind(db, {"uuids": [r.uuid for r in rows]}, sc_with)
     with_m = {r.uuid: r for r in db.execute(text(f"""
@@ -715,8 +990,8 @@ def building_scenario_demand(db: Session, bbox: str | None, polygon: dict | None
         notes.append("Maßnahmen: " + "; ".join(f"{l.label} {l.cool_pct_std:+.0f} % ({l.cool_pct_min:+.0f} bis "
                                                    f"{l.cool_pct_max:+.0f} %)" for l in labels)
                      + ". Wirkungen multiplizieren sich.")
-    notes.append("Rechenzentren und Kühlhäuser (Prozesskälte) sind nicht in der Rangfolge, weil die Maßnahmen dort "
-                 "nicht wirken.")
+    notes.append("Rechenzentren und Kühlhäuser (Prozesskälte): die Maßnahmen wirken dort nicht"
+                 + ("." if (address or place) else ", deshalb sind sie nicht in der Rangfolge."))
     fr = frame("features", fields, out, ["cooling_mockup", "alkis_function"], ids=[r["bldg_uuid"] for r in out],
                total=len(out), query={"compare_measures": compare, **std, "top_n": top, "districts": districts,
                                       "scope": scope}, notes=notes)
@@ -736,14 +1011,33 @@ LINE_DENSITY_LABEL = {
 def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, carrier: str = "cooling",
                  scenario: str | None = None, group_by: str | None = None, basis: str | None = None,
                  min_length_m: float | None = None, min_buildings: int | None = None, top_n: int | None = None, districts: list[str] | None = None,
-                 scope: str | None = None, **_) -> dict:
+                 scope: str | None = None, climate: str | None = None, year: int | None = None,
+                 measures: list[str] | None = None, setpoint: float | None = None, **_) -> dict:
     carrier = "heat" if carrier == "heat" else "cooling"
     scenario = scenario if scenario in LINE_DENSITY_LABEL else "standard"
+    src, custom_label = "core_base.v_line_density", None
+    if any(v is not None for v in (climate, year, measures, setpoint)):
+        # any scenario: a precomputed one if it matches, else computed now (the whole city, ~0.5 min)
+        sc = cooling.scenario(climate, year, measures, setpoint)
+        hit = db.execute(text("""SELECT scenario FROM core_bldg.line_density_scenario
+                                 WHERE climate = :cl AND year = :yr AND sort IS NOT NULL
+                                   AND measures @> CAST(:ms AS text[]) AND measures <@ CAST(:ms AS text[])
+                                   AND setpoint IS NOT DISTINCT FROM CAST(:sp AS numeric)"""),
+                         {"cl": sc["climate"], "yr": sc["year"], "ms": sc["measures"], "sp": sc["setpoint"]}).scalar()
+        if hit:
+            scenario = hit
+        else:
+            scenario, custom_label = "custom", cooling.label(sc)
+            src = ("(SELECT 'custom'::text AS scenario, f.*, s.street_name, s.district, s.geom "
+                   "FROM core_bldg.f_line_density(:cl, :yr, CAST(:ms AS text[]), CAST(:sp AS numeric), '2045_o45') f "
+                   "JOIN core_base.street_segment s ON s.id = f.segment_id)")
     trasse = basis != "street"
     by_street = group_by == "street"
     top = max(1, min(int(top_n or 300), 2000))
     params: dict = {"scenario": scenario, "top": top, "min_len": float(min_length_m or 0),
                     "min_n": int(min_buildings or 0)}
+    if custom_label:
+        params.update({"cl": sc["climate"], "yr": sc["year"], "ms": sc["measures"], "sp": sc["setpoint"]})
     where = ["l.scenario = :scenario"]
     if districts:
         ors = []
@@ -768,7 +1062,7 @@ def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, 
             SELECT {key}, SUM({mwh}) AS mwh, SUM({length}) AS len, SUM(l.street_m) AS street_m,
                    SUM(l.n_buildings) AS n, array_agg(l.segment_id) AS seg_ids,
                    ST_LineMerge(ST_Collect(l.geom)) AS geom
-            FROM core_base.v_line_density l
+            FROM {src} l
             WHERE {' AND '.join(where)}
             GROUP BY {key}
             HAVING SUM(l.street_m) >= :min_len AND SUM(l.n_buildings) >= :min_n AND SUM({mwh}) > 0
@@ -785,7 +1079,7 @@ def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, 
     median = db.execute(text(f"""
         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY {mwh} * 1000 / NULLIF({length}, 0)) AS m,
                SUM({mwh}) * 1000 / NULLIF(SUM({length}), 0) AS mean
-        FROM core_base.v_line_density l WHERE {' AND '.join(where)} AND l.street_m >= :min_len"""), params).one()
+        FROM {src} l WHERE {' AND '.join(where)} AND l.street_m >= :min_len"""), params).one()
     label = ("Wärmeliniendichte" if carrier == "heat" else "Kälteliniendichte")
     unit = "kWh/(m·a)"
     features, out, seg_rank = [], [], {}
@@ -816,7 +1110,7 @@ def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, 
         n_conn = len(conns)
     total = int(rows[0].total) if rows else 0
     demand_label = "Wärmebedarf (KWW)" if carrier == "heat" else "Kältebedarf"
-    notes = [f"Szenario {LINE_DENSITY_LABEL[scenario]}. Liniendichte = Jahresbedarf der angeschlossenen beheizten "
+    notes = [f"Szenario {(custom_label or LINE_DENSITY_LABEL[scenario])}. Liniendichte = Jahresbedarf der angeschlossenen beheizten "
              f"Gebäude je Meter {'Haupt- und Anschlussleitung' if trasse else 'Straßenabschnitt'} auf der "
              "potenziellen Netzstruktur (kein bestehendes Netz)."]
     if median.m is not None:
@@ -839,7 +1133,7 @@ def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, 
     fr["geo"] = True
     return {"layer": f"{carrier}_lines", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
             "summary_for_llm": {"shown": len(out), "total_sections": total, "unit": unit, "metric": label,
-                                "scenario": LINE_DENSITY_LABEL[scenario], "top": out[:10],
+                                "scenario": (custom_label or LINE_DENSITY_LABEL[scenario]), "top": out[:10],
                                 "median_in_area": round(median.m) if median.m is not None else None,
                                 "connection_lines_shown": n_conn,
                                 "notes": notes}}
@@ -904,6 +1198,21 @@ def report_missing_data(db: Session, bbox: str | None, polygon: dict | None = No
 
 def execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon: dict | None) -> dict | None:
     """Run one of this module's tools, or None if the name isn't one of them."""
+    try:
+        return _execute(name, tool_input, db, bbox, polygon)
+    except LookupError as e:  # address or place not found
+        return {"error": str(e)}
+
+
+def _execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon: dict | None) -> dict | None:
+    if tool_input.get("address") or tool_input.get("place"):
+        # an address or a named site replaces the map view, drawn area and districts
+        tool_input = {k: v for k, v in tool_input.items() if k not in ("districts", "postcodes")}
+        tool_input["scope"], polygon = "berlin", None
+    if name == "cooling_scenarios":
+        return cooling_scenarios(db, bbox, polygon, **tool_input)
+    if name == "color_buildings":
+        return color_buildings(db, bbox, polygon, **tool_input)
     if name == "aggregate_buildings":
         return aggregate_buildings(db, bbox, polygon, **tool_input)
     if name == "monthly_profile":

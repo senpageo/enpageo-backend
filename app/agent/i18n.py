@@ -39,6 +39,42 @@ EXACT = {
     "Prozesswärme (KWW)": "Process heat (KWW)",
     "Ja": "Yes", "Nein": "No", "Ja/Nein": "Yes/No",
     "Straße": "Street",
+    "Jahr": "Year",
+    "Klimaszenario": "Climate scenario",
+    "Sollwert": "Setpoint",
+    "Maßnahmen": "Measures",
+    "geringer Klimawandel": "low climate change",
+    "mittlerer Klimawandel": "medium climate change",
+    "starker Klimawandel": "strong climate change",
+    "ohne Maßnahmen": "without measures",
+    "Sollwert nach Gebäudefunktion": "setpoint per building function",
+    "Kältestrom bei Deckung des Bedarfs": "Chiller electricity if the demand is met",
+    "elektrische Leistung der Kälteerzeugung": "Electric power of cooling generation",
+    "Abwärme der Kälteerzeugung (aus Bedarf)": "Waste heat of cooling generation (from demand)",
+    "Abwärme erkannter Kälteanlagen": "Waste heat of detected chillers",
+    "Abwärmeleistung erkannter Kälteanlagen": "Waste heat output of detected chillers",
+    "Anteil des Bedarfs, den erkannte Anlagen decken": "Share of demand met by detected units",
+    "Planungsraum (Nr.)": "Planning area (no.)",
+    "mittlerer U-Wert (typisch)": "Mean U-value (typical)",
+    "mittlerer U-Wert (typisch, Mittel der Gebäude)": "Mean U-value (typical, mean of buildings)",
+    "U-Wert Wand": "U-value wall", "U-Wert Dach": "U-value roof", "U-Wert Boden": "U-value floor",
+    "U-Wert Fenster": "U-value window", "U-Wert Wand ±": "U-value wall ±", "U-Wert Dach ±": "U-value roof ±",
+    "U-Wert Boden ±": "U-value floor ±", "U-Wert Fenster ±": "U-value window ±",
+    "U-Wert Wand (typisch)": "U-value wall (typical)", "U-Wert Fenster (typisch)": "U-value window (typical)",
+    "Quelle U-Werte": "U-value source",
+    "TABULA DE (Typgebäude Ist-Zustand)": "TABULA DE (type building, current state)",
+    "IWU-NWG (Mittel der erhobenen Gebäude)": "IWU-NWG (mean of surveyed buildings)",
+    "Typische U-Werte nach Gebäudetyp und Baualter (NaiS-DB: TABULA DE, IWU-NWG)":
+        "Typical U-values by building type and age (NaiS-DB: TABULA DE, IWU-NWG)",
+    "Tatsächlicher Sanierungsstand und gemessene U-Werte je Gebäude":
+        "Actual retrofit state and measured U-values per building",
+    "Sind nicht im Datenbestand; typische U-Werte nach Gebäudetyp und Baualter (NaiS-DB) sind da":
+        "Not in the dataset; typical U-values by building type and age (NaiS-DB) are available",
+    "U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt.":
+        "U-values: typical values by building type and age from the NaiS-DB (residential: TABULA type buildings in current state, non-residential: IWU-NWG means with standard error); the actual retrofit state of each building is not known.",
+    "Kältestrom = Kältebedarf / Leistungszahl der Kälteerzeugung je Nutzung (luftgekühlt 2,7, wassergekühlt 3,9; Annahme), wenn der ganze Bedarf mit Kälteanlagen gedeckt wird.":
+        "Chiller electricity = cooling demand / EER of cooling generation per usage (air-cooled 2.7, water-cooled 3.9; assumption), if the whole demand is met by chillers.",
+    "Keine beheizten Gebäude mit Kältebedarf in dieser Auswahl.": "No heated buildings with cooling demand in this selection.",
     "Kältebedarf": "Cooling demand",
     "spez. Kältebedarf": "Specific cooling demand",
     "Kältebedarf min": "Cooling demand min",
@@ -273,6 +309,20 @@ PATTERNS = [
     (re.compile(r"^Maßnahmen: (.+)\. Wirkungen multiplizieren sich; Kühlhäuser und Rechenzentren ausgenommen\.$"),
      lambda m: f"Measures: {_measures_en(m.group(1))}. Effects multiply; cold stores and data centres excluded."),
     (re.compile(r"^(.+) – (min|max)$"), lambda m: f"{tr(m.group(1))} – {m.group(2)}"),
+    (re.compile(r"^Entwicklung (\d{4})–(\d{4}); sonst wie (.+)\. Annahmen, keine Simulation\.$"),
+     lambda m: f"Development {m.group(1)}–{m.group(2)}; otherwise {_scenario_en(m.group(3))}. Assumptions, not a simulation."),
+    (re.compile(r"^Sonst wie (.+)\. Annahmen, keine Simulation\.$"),
+     lambda m: f"Otherwise {_scenario_en(m.group(1))}. Assumptions, not a simulation."),
+    (re.compile(r"^Abgleich: Kälteverbrauch erkannter Anlagen heute ([\d.]+) MWh/a an (\d+) Gebäuden\.$"),
+     lambda m: f"Cross-check: consumption of detected chillers today {m.group(1).replace('.', ',')} MWh/a in {m.group(2)} buildings."),
+    (re.compile(r"^(\d+) Gebäude eingefärbt( \(Obergrenze erreicht\))?; Median (.+), 10 %: (.+), 90 %: (.+)$"),
+     lambda m: f"{m.group(1)} buildings coloured{' (limit reached)' if m.group(2) else ''}; median {m.group(3)}, "
+               f"10 %: {m.group(4)}, 90 %: {m.group(5)}"),
+    (re.compile(r"^Änderung gegenüber (.+)$"), lambda m: f"Change vs. {tr(m.group(1))}"),
+    (re.compile(r"^((?:außenliegende Fensterverschattung|Lüftung durch Nutzer|automatische Nachtlüftung)(?: \+ .+)?)$"),
+     lambda m: _measures_en(m.group(1))),
+    (re.compile(r"^(Adresse|Ort) aufgelöst als: (.+)$"),
+     lambda m: f"{'Address' if m.group(1) == 'Adresse' else 'Place'} resolved as: {m.group(2)}"),
     (re.compile(r"^Kältebedarf: (Standardszenario|Szenario) (.+)\. Annahmen \(kWh/\(m²·a\) je Gebäudefunktion und "
                 r"Baualter mit Korrekturfaktoren\), keine Simulation\.$"),
      lambda m: f"Cooling demand: {'standard scenario' if m.group(1) == 'Standardszenario' else 'scenario'} "
@@ -321,7 +371,7 @@ def tr(s):
 
 
 # row fields that hold German category values (not names, numbers or ids)
-_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat", "plot_owner"}
+_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat", "plot_owner", "climate", "scenario"}
 
 
 def localize(fr: dict | None, lang: str | None) -> dict | None:
@@ -373,6 +423,9 @@ def _view_title(t: str) -> str:
     m = re.match(r"^(.+) im Jahresverlauf$", t)
     if m:
         return f"{_view_title(m.group(1))} over the year"
+    m = re.match(r"^(.+) über die Jahre$", t)
+    if m:
+        return f"{_view_title(m.group(1))} over the years"
     m = re.match(r"^(.+?) nach (.+)$", t)
     if m:
         return f"{tr(m.group(1))} by " + " and ".join(tr(g).lower() for g in m.group(2).split(" und "))

@@ -59,8 +59,10 @@ def choose_rule(fr: dict) -> dict:
         n_series = len({r.get(series_field) for r in fr["rows"]}) if series_field else 1
         if n_series > MAX_LINE_SERIES:
             return {**view, "type": "table", "companions": [], "title": _title(value, series), "rationale": "zu viele Zeitreihen -> Tabelle"}
-        return {**view, "type": "line", "companions": ["table"], "x": "month", "y": value["name"], "series": series_field,
-                "title": _title(value, []) + " im Jahresverlauf", "rationale": "Zeitachse -> Liniendiagramm"}
+        time = _fields(fr, "temporal")[0]["name"] if _fields(fr, "temporal") else "month"
+        return {**view, "type": "line", "companions": ["table"], "x": time, "y": value["name"], "series": series_field,
+                "title": _title(value, []) + (" im Jahresverlauf" if time == "month" else " über die Jahre"),
+                "rationale": "Zeitachse -> Liniendiagramm"}
 
     # aggregate
     groups = [f for f in fr["fields"] if f["type"] in ("nominal", "ordinal")]
