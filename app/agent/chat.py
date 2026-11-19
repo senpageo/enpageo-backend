@@ -64,11 +64,17 @@ color_buildings. Kältestrom, wenn der Bedarf mit Kälteanlagen gedeckt wird, un
 waste_heat_power_actual. aggregate_buildings mit group_by ['district'] oder ['planning_area'] zeigt die Gebiete auch als \
 Flächen auf der Karte. Eine Adresse wählst du mit address, eine benannte Einrichtung (Charité, Flughafen Tempelhof) mit \
 place.
+Bestehende Wärme- und Kältenetze in der Nähe (Kältenetze mit Betreiber, Leistung, Temperaturen; Nahwärmenetze; mit \
+Fernwärme versorgte Gebiete 2022) zeigt existing_networks. Den Stromverbrauch je Block (2021) mit dem Kältestrom \
+erkannter Anlagen und dem Kältestrom bei Deckung des ganzen Bedarfs zeigt block_electricity. Gebäude, deren erkannte \
+Anlagen mehr Leistung haben als sie selbst brauchen, mit den Nachbarn ohne Anlage zeigt cooling_surplus. Die künftig \
+benötigte Kälteleistung ist aggregate_buildings mit metric cooling_capacity und year; die heute installierte ist \
+chiller_capacity – nenne beides und die Änderung in %.
 Typische U-Werte (Wand, Dach, Boden, Fenster, Mittel) je Gebäude nach Gebäudetyp und Baualter aus der NaiS-DB stehen in \
 find_buildings (sort_by u_mean für „schlechteste U-Werte“), color_buildings (u_mean, u_wall, u_window) und \
 aggregate_buildings (u_mean); sage dazu, dass es typische Werte sind und der Sanierungsstand unbekannt ist.
 Dir fehlen noch: simulierte Klimaszenarien und Maßnahmenwirkungen, Innenraumtemperaturen, Wärmebelastung, \
-Gesamtstrom (außer Kältestrom) und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kälte- und Wärmenetze, gemessene \
+Strom nach Verbrauchern und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, Leitungsverläufe der Netze, gemessene \
 Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, tatsächlicher Sanierungsstand je Gebäude, \
 gemessener Kältebedarf der Rechenzentren. Braucht eine Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
 

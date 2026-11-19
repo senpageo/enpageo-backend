@@ -257,6 +257,50 @@ MONTHLY_PROFILE_SCHEMA = {
     "required": [],
 }
 
+EXISTING_NETWORKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["all", "heat", "cooling"],
+                 "description": "all (default), heat (district / local heating) or cooling (district cooling networks)"},
+        "max_distance_m": {"type": "number",
+                           "description": "Also report networks up to this distance from the area, default 500"},
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
+BLOCK_ELECTRICITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "color_by": {"type": "string", "enum": ["electricity", "cooling_share", "cooling_demand_share"],
+                     "description": "What the blocks are coloured by on the map: electricity (total consumption per "
+                                    "block, default), cooling_share (share of the electricity of detected chillers), "
+                                    "cooling_demand_share (share the chiller electricity would have if the whole "
+                                    "cooling demand were met by chillers)"},
+        "top_n": {"type": "integer", "description": "Blocks listed in the table, default 50"},
+        **cooling.SCENARIO_PROPS,
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
+COOLING_SURPLUS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "radius_m": {"type": "number", "description": "Radius in which neighbours are checked, default 300"},
+        "top_n": {"type": "integer", "description": "Buildings with the largest surplus, default 20"},
+        **cooling.SCENARIO_PROPS,
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
 COOLING_SCENARIOS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -358,6 +402,36 @@ LINE_DENSITY_SCHEMA = {
 
 TOOLS = [
     {
+        "name": "existing_networks",
+        "description": (
+            "Existing heating and cooling networks near an area, address or site: district cooling networks (operator, "
+            "capacity, annual energy, length, supply/return temperature, source), local heating networks per block "
+            "(operator) and the areas supplied with district or local heating in 2022 (200 m grid), each with the "
+            "distance. Use for 'gibt es ein Kältenetz / Fernwärme in der Nähe', 'wo liegen Wärmenetze'. Network "
+            "routes (pipes) are not public."
+        ),
+        "input_schema": EXISTING_NETWORKS_SCHEMA,
+    },
+    {
+        "name": "block_electricity",
+        "description": (
+            "Electricity consumption per statistical block (Berlin energy atlas, 2021) in an area, next to the "
+            "electricity of detected chillers and the chiller electricity if the whole cooling demand were met by "
+            "chillers, with shares; blocks coloured on the map. Use for 'Strombedarf/Stromverbrauch im Gebiet', 'wie "
+            "setzt sich der Strombedarf zusammen', 'Anteil Kühlung am Strom'."
+        ),
+        "input_schema": BLOCK_ELECTRICITY_SCHEMA,
+    },
+    {
+        "name": "cooling_surplus",
+        "description": (
+            "Buildings whose detected chillers have more capacity than their own cooling demand needs (Kälteüberschuss), "
+            "with the neighbours within a radius that need cooling and have no detected chiller: count, required "
+            "capacity, demand, distance. Use for 'welche Gebäude könnten Nachbarn mitversorgen', 'Kälteüberschuss'."
+        ),
+        "input_schema": COOLING_SURPLUS_SCHEMA,
+    },
+    {
         "name": "cooling_scenarios",
         "description": (
             "Cooling demand (or chiller electricity) of an area, a group of buildings or one building under several "
@@ -456,12 +530,12 @@ MISSING = {
                  "kommen aus der Simulation im Projekt; Annahmen (Mockup) für Verschattung und Lüftung gibt es schon (building_scenario_demand)"),
     "indoor_temperature": ("Innenraumtemperaturen und Überhitzungsstunden", "kommen aus der Simulation im Projekt"),
     "outdoor_heat": ("Angaben zur Wärmebelastung im Außenraum", "die Einbindung der HOSTRADA-Klimadaten ist geplant"),
-    "electricity": ("Gesamtstrombedarf und Lastgänge",
-                    "sind noch nicht im Datenbestand; nur der Kältestrom erkannter Anlagen ist grob geschätzt (Metrik electricity_cooling)"),
+    "electricity": ("Strom nach Verbrauchern (Haushalt, Gewerbe) und Lastgänge",
+                    "sind noch nicht im Datenbestand; der Stromverbrauch je Block (2021) und der Kältestrom sind da (block_electricity)"),
     "pv": ("PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude",
            "Dachpotenzial (kWp) und Anlagen ab 30 kWp bzw. der öffentlichen Hand sind da (find_buildings), kleine Anlagen nur je PLZ"),
-    "cooling_networks": ("Bestehende Kältenetze (Lage, Betreiber, Kapazität)",
-                         "sind noch nicht im Datenbestand; die potenzielle Netzstruktur auf dem Straßennetz und Wärme-/Kälteliniendichten sind da (line_density)"),
+    "cooling_networks": ("Leitungsverläufe bestehender Wärme- und Kältenetze",
+                         "sind nicht öffentlich; versorgte Gebiete, Nahwärmenetze und bekannte Kältenetze sind da (existing_networks)"),
     "chiller_capacity": ("gemessene Kälteleistungen je erkannter Anlage",
                          "es gibt die KIT-Schätzung je Anlage aus dem Luftbild (Metrik chiller_capacity, mit Spanne; find_chillers je Anlage)"),
     "other_city": ("Gebäudedaten außerhalb Berlins", "Stuttgart und Korbach folgen im Projekt, weitere Städte sind nicht vorgesehen"),
@@ -924,6 +998,242 @@ def color_buildings(db: Session, bbox: str | None, polygon: dict | None = None, 
                                              "p10": q(0.1), "p90": q(0.9), "highest": top[:5], "notes": notes}}
 
 
+def _search_area(db: Session, params: dict, bbox, polygon, districts, scope, address=None, place=None):
+    """SQL expression (25833) of the area asked about, or None for all of Berlin, plus notes."""
+    if address or place:
+        cond, notes, error = selection_condition(db, params, address, place)
+        if error:
+            raise LookupError(error)
+        return f"(SELECT ST_Union(b.geom) FROM emc.building b WHERE {cond})", notes
+    if districts:
+        ors = []
+        for k, name in enumerate(districts):
+            params[f"district_{k}"] = f"%{name}%"
+            ors.append(f"d.name ILIKE :district_{k}")
+        return f"(SELECT ST_Union(d.geom) FROM emc.district d WHERE {' OR '.join(ors)})", []
+    if polygon:
+        return _build_search_geom_expr(polygon, None, params), []
+    if scope != "berlin" and bbox:
+        try:
+            min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
+            params.update({"min_lon": min_lon, "min_lat": min_lat, "max_lon": max_lon, "max_lat": max_lat})
+            return "ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)", []
+        except ValueError:
+            pass
+    return None, []
+
+
+def existing_networks(db: Session, bbox: str | None, polygon: dict | None = None, *, kind: str = "all",
+                      max_distance_m: float | None = None, districts: list[str] | None = None,
+                      scope: str | None = None, address: str | None = None, place: str | None = None, **_) -> dict:
+    kind = kind if kind in ("heat", "cooling") else "all"
+    params: dict = {"dist": float(max_distance_m or 500)}
+    area, notes = _search_area(db, params, bbox, polygon, districts, scope, address, place)
+    near = (lambda g: f"ST_DWithin({g}, a.g, :dist)") if area else (lambda g: "true")
+    dist = (lambda g: f"round(ST_Distance({g}, a.g))") if area else (lambda g: "0")
+    a_cte = f"WITH a AS (SELECT {area} AS g) " if area else "WITH a AS (SELECT NULL::geometry AS g) "
+    features, rows = [], []
+    if kind in ("all", "cooling"):
+        for r in db.execute(text(a_cte + f"""
+            SELECT n.*, {dist('n.area_geom')} AS d_area, {dist('n.plant_geom')} AS d_plant,
+                   ST_AsGeoJSON(ST_Transform(n.area_geom, 4326), 6) AS ga, ST_AsGeoJSON(ST_Transform(n.plant_geom, 4326), 6) AS gp
+            FROM core_base.cooling_network n, a WHERE {near('n.area_geom')} ORDER BY d_area"""), params).all():
+            rows.append({"type": "Kältenetz", "name": r.name, "operator": r.operator, "distance_m": float(r.d_area),
+                         "capacity_mw": float(r.capacity_mw) if r.capacity_mw else None,
+                         "energy_mwh_a": float(r.energy_mwh_a) if r.energy_mwh_a else None,
+                         "length_km": float(r.length_km) if r.length_km else None,
+                         "temperatures": f"{r.t_supply_c:g}/{r.t_return_c:g} °C" if r.t_supply_c else None,
+                         "detail": f"Kältezentrale {r.plant}; Kunden u. a. {', '.join(r.customers[:4])}. {r.remark}",
+                         "source": r.source})
+            features += [{"type": "Feature", "geometry": json.loads(r.ga), "properties": {"kind": "cooling", "name": r.name}},
+                         {"type": "Feature", "geometry": json.loads(r.gp), "properties": {"kind": "cooling_plant", "name": r.plant}}]
+    if kind in ("all", "heat"):
+        local = db.execute(text(a_cte + f"""
+            SELECT n.operator, count(*) AS n, min({dist('n.geom')}) AS d,
+                   json_agg(ST_AsGeoJSON(ST_Transform(n.geom, 4326), 6)) AS gs
+            FROM core_base.local_heat_network n, a WHERE {near('n.geom')} GROUP BY 1 ORDER BY d LIMIT 50"""), params).all()
+        for r in local:
+            rows.append({"type": "Nahwärmenetz", "name": f"{r.n} Teilblock" if r.n == 1 else f"{r.n} Teilblöcke",
+                         "operator": r.operator, "distance_m": float(r.d), "capacity_mw": None, "energy_mwh_a": None,
+                         "length_km": None, "temperatures": None, "detail": None,
+                         "source": "Wärmeplan Berlin, Bestandsanalyse (gdi.berlin.de)"})
+            features += [{"type": "Feature", "geometry": json.loads(g), "properties": {"kind": "local_heat", "name": r.operator}}
+                         for g in r.gs[:500]]
+        cells = db.execute(text(a_cte + f"""
+            SELECT count(*) AS n, min({dist('c.geom')}) AS d,
+                   (array_agg(ST_AsGeoJSON(ST_Transform(c.geom, 4326), 6)))[1:3000] AS gs
+            FROM core_base.heat_supply_cell c, a WHERE {near('c.geom')}"""), params).one()
+        if cells.n:
+            rows.append({"type": "Fern-/Nahwärmeversorgung 2022", "name": f"{cells.n} versorgte 200-m-Zellen",
+                         "operator": None, "distance_m": float(cells.d), "capacity_mw": None, "energy_mwh_a": None,
+                         "length_km": None, "temperatures": None,
+                         "detail": "Zelle gilt als versorgt, sobald eine versorgte Adresse darin liegt; Fern- und Nahwärme "
+                                   "nicht getrennt, Leitungen nicht öffentlich",
+                         "source": "Fern- und Nahwärmeversorgung 2022 (gdi.berlin.de)"})
+            features += [{"type": "Feature", "geometry": json.loads(g), "properties": {"kind": "heat_supply"}}
+                         for g in cells.gs]
+    if not rows:
+        notes.append(f"Im Gebiet und bis {params['dist']:.0f} m darum liegt kein bekanntes "
+                     + {"heat": "Wärmenetz", "cooling": "Kältenetz"}.get(kind, "Wärme- oder Kältenetz") + ".")
+    notes.append("Kältenetze: nur aus öffentlichen Angaben (in Berlin bisher Potsdamer Platz); Versorgungsgebiet "
+                 "ungefähr aus den genannten Kunden, Leitungsverläufe nicht öffentlich. Distanz 0 = im Gebiet.")
+    fr = frame("features", [field("type", "nominal", "Art"), field("name", "nominal", "Name"),
+                            field("operator", "nominal", "Betreiber / Ansprechpartner"),
+                            field("distance_m", "quantitative", "Entfernung", "m"),
+                            field("capacity_mw", "quantitative", "Kälteleistung", "MW"),
+                            field("energy_mwh_a", "quantitative", "Jahresarbeit", "MWh/a"),
+                            field("length_km", "quantitative", "Trassenlänge", "km"),
+                            field("temperatures", "nominal", "Vor-/Rücklauf"), field("detail", "nominal", "Hinweis"),
+                            field("source", "nominal", "Quelle")],
+               rows, ["heat_networks", "cooling_networks"], total=len(rows),
+               query={"kind": kind, "max_distance_m": params["dist"], "districts": districts, "scope": scope,
+                      "address": address, "place": place}, notes=notes)
+    fr["geo"] = True
+    return {"layer": "networks", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr}
+
+
+def block_electricity(db: Session, bbox: str | None, polygon: dict | None = None, *, color_by: str = "electricity",
+                      top_n: int | None = None, climate: str | None = None, year: int | None = None,
+                      measures: list[str] | None = None, setpoint: float | None = None,
+                      districts: list[str] | None = None, scope: str | None = None, address: str | None = None,
+                      place: str | None = None, **_) -> dict:
+    color_by = color_by if color_by in ("cooling_share", "cooling_demand_share") else "electricity"
+    sc = cooling.scenario(climate, year, measures, setpoint)
+    params: dict = {}
+    cooling.bind(db, params, sc)
+    area, notes = _search_area(db, params, bbox, polygon, districts, scope, address, place)
+    where = f"AND ST_Intersects(blk.geom, ({area}))" if area else ""
+    rows = db.execute(text(f"""
+        WITH el AS (SELECT blk_id, consumption FROM emc.consumption_block WHERE energy_type = 'elec' AND year = 2021),
+        bl AS (SELECT blk.blk_id, blk.geom, el.consumption FROM emc.block blk JOIN el ON el.blk_id = blk.blk_id
+               WHERE true {where}),
+        cool AS (SELECT b.mostly_in_block AS blk_id, SUM(cact.electricity_kwh_mean) AS act, COUNT(cact.uuid) AS n_act,
+                        SUM({cooling.ELEC}) AS dem
+                 FROM emc.building b
+                 LEFT JOIN core_bldg.cooling_estimate_building cact ON cact.uuid = b.uuid
+                 {cooling.COOL_JOIN}
+                 WHERE b.mostly_in_block IN (SELECT blk_id FROM bl)
+                 GROUP BY 1)
+        SELECT bl.blk_id, bl.consumption, cool.act, cool.n_act, cool.dem,
+               ST_AsGeoJSON(ST_Transform(ST_SimplifyPreserveTopology(bl.geom, 2), 4326), 6) AS g
+        FROM bl LEFT JOIN cool ON cool.blk_id = bl.blk_id"""), params).all()
+
+    def mwh(v):
+        return round(float(v) / 1000, 1) if v is not None else None
+
+    out, features = [], []
+    for r in rows:
+        el = float(r.consumption or 0)
+        row = {"block": str(r.blk_id), "electricity_mwh_a": mwh(r.consumption),
+               "cooling_actual_mwh_a": mwh(r.act), "buildings_with_chiller": r.n_act or 0,
+               "cooling_share_pct": round(100 * float(r.act) / el, 1) if r.act and el else None,
+               "cooling_demand_mwh_a": mwh(r.dem),
+               "cooling_demand_share_pct": round(100 * float(r.dem) / el, 1) if r.dem and el else None}
+        out.append(row)
+        v = {"electricity": row["electricity_mwh_a"], "cooling_share": row["cooling_share_pct"],
+             "cooling_demand_share": row["cooling_demand_share_pct"]}[color_by]
+        if v:
+            features.append({"type": "Feature", "geometry": json.loads(r.g), "properties": {"block": row["block"], "value": v}})
+    tot = {k: sum(r[k] or 0 for r in out) for k in ("electricity_mwh_a", "cooling_actual_mwh_a", "cooling_demand_mwh_a")}
+    out.sort(key=lambda r: -(r["electricity_mwh_a"] or 0))
+    top = max(1, min(int(top_n or 50), 500))
+    summary = {"blocks": len(out), "electricity_mwh_a": round(tot["electricity_mwh_a"]),
+               "cooling_actual_mwh_a": round(tot["cooling_actual_mwh_a"]),
+               "cooling_actual_share_pct": round(100 * tot["cooling_actual_mwh_a"] / tot["electricity_mwh_a"], 1) if tot["electricity_mwh_a"] else None,
+               "cooling_demand_electricity_mwh_a": round(tot["cooling_demand_mwh_a"]),
+               "cooling_demand_share_pct": round(100 * tot["cooling_demand_mwh_a"] / tot["electricity_mwh_a"], 1) if tot["electricity_mwh_a"] else None}
+    notes += [f"{len(out)} Blöcke: Stromverbrauch 2021 {summary['electricity_mwh_a']:,} MWh/a; davon erkannte Kälteanlagen "
+              f"{summary['cooling_actual_mwh_a']:,} MWh/a ({summary['cooling_actual_share_pct']} %); wenn der ganze "
+              f"Kältebedarf mit Kälteanlagen gedeckt würde: {summary['cooling_demand_electricity_mwh_a']:,} MWh/a "
+              f"({summary['cooling_demand_share_pct']} %).".replace(",", "."),
+              "Stromverbrauch je Block: Umweltatlas Berlin 08.10 (Netzbetreiber, 2021), alle Verbraucher zusammen, keine "
+              "Aufteilung nach Haushalt/Gewerbe. Kältestrom aus erkannten Anlagen und aus dem Bedarf: Schätzungen.",
+              cooling.note(sc)]
+    fr = frame("aggregate", [field("block", "nominal", "Block"), field("electricity_mwh_a", "quantitative", "Stromverbrauch 2021", "MWh/a"),
+                             field("cooling_actual_mwh_a", "quantitative", "Kältestrom erkannter Anlagen", "MWh/a"),
+                             field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude"),
+                             field("cooling_share_pct", "quantitative", "Anteil Kältestrom (erkannt)", "%"),
+                             field("cooling_demand_mwh_a", "quantitative", "Kältestrom bei Deckung des Bedarfs", "MWh/a"),
+                             field("cooling_demand_share_pct", "quantitative", "Anteil Kältestrom (Bedarf)", "%")],
+               out[:top], ["block_electricity", "chillers", "chiller_estimate", "cooling_mockup"], total=len(out),
+               query={"color_by": color_by, **sc, "districts": districts, "scope": scope, "address": address,
+                      "place": place}, notes=notes)
+    # the unit of the colouring travels with the features (the chat passes the geojson through unchanged)
+    return {"layer": "cells", "geojson": {"type": "FeatureCollection", "features": features,
+                                          "legend_unit": "MWh/a" if color_by == "electricity" else "%"}, "frame": fr,
+            "summary_for_llm": {**summary, "top_blocks": out[:5], "notes": notes}}
+
+
+def cooling_surplus(db: Session, bbox: str | None, polygon: dict | None = None, *, radius_m: float | None = None,
+                    top_n: int | None = None, climate: str | None = None, year: int | None = None,
+                    measures: list[str] | None = None, setpoint: float | None = None,
+                    districts: list[str] | None = None, scope: str | None = None, address: str | None = None,
+                    place: str | None = None, **_) -> dict:
+    sc = cooling.scenario(climate, year, measures, setpoint)
+    params: dict = {"radius": float(radius_m or 300), "top": max(1, min(int(top_n or 20), 200))}
+    cooling.bind(db, params, sc)
+    area, notes = _search_area(db, params, bbox, polygon, districts, scope, address, place)
+    where = f"AND ST_Intersects(b.geom, ({area}))" if area else ""
+    rows = db.execute(text(f"""
+        WITH s AS (
+            SELECT b.uuid, b.geom, b.namlag, b.hnr, kg.gfk_name AS bf,
+                   cact.capacity_kw_mean AS inst, cact.capacity_kw_min AS inst_min, cact.capacity_kw_max AS inst_max,
+                   COALESCE({cooling.CAPACITY}, 0) AS req, cact.n_units
+            FROM core_bldg.cooling_estimate_building cact
+            JOIN emc.building b ON b.uuid = cact.uuid
+            LEFT JOIN core_bldg.kww_gfk_mapping kg ON kg.gfk = b.gfk
+            {cooling.COOL_JOIN}
+            -- only heated buildings whose chillers serve the building itself: no process cooling (production,
+            -- cold stores, data centres, storage halls), there the installed capacity is used by the process, not spare
+            WHERE cb.uuid IS NOT NULL AND cb.cooling_group NOT IN ('produktion_gewerbe', 'kuehlhaus', 'rechenzentrum', 'lager')
+              AND cact.capacity_kw_mean > COALESCE({cooling.CAPACITY}, 0) {where}
+            ORDER BY cact.capacity_kw_mean - COALESCE({cooling.CAPACITY}, 0) DESC LIMIT :top)
+        SELECT s.*, s.inst - s.req AS surplus, nb.n, nb.req_kw, nb.dem_kwh, nb.d_min,
+               ST_AsGeoJSON(ST_Transform(s.geom, 4326), 6) AS g
+        FROM s CROSS JOIN LATERAL (
+            SELECT count(*) AS n, SUM({cooling.CAPACITY}) AS req_kw, SUM({cooling.ANNUAL}) AS dem_kwh,
+                   min(ST_Distance(b.geom, s.geom)) AS d_min
+            FROM emc.building b {cooling.COOL_JOIN}
+            WHERE ST_DWithin(b.geom, s.geom, :radius) AND b.uuid <> s.uuid AND cb.uuid IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM core_bldg.cooling_estimate_building x WHERE x.uuid = b.uuid)) nb
+        ORDER BY surplus DESC"""), params).all()
+    out, features = [], []
+    for k, r in enumerate(rows):
+        address_s = r.namlag if r.namlag and r.hnr and r.namlag.endswith(r.hnr) else " ".join(x for x in (r.namlag, r.hnr) if x) or None
+        out.append({"rank": k + 1, "bldg_uuid": r.uuid, "address": address_s, "building_function": r.bf,
+                    "installed_kw": round(float(r.inst)), "installed_min_kw": round(float(r.inst_min or 0)),
+                    "installed_max_kw": round(float(r.inst_max or 0)), "required_kw": round(float(r.req)),
+                    "surplus_kw": round(float(r.surplus)), "neighbours": r.n,
+                    "neighbours_required_kw": round(float(r.req_kw or 0)),
+                    "neighbours_demand_mwh_a": round(float(r.dem_kwh or 0) / 1000, 1),
+                    "nearest_neighbour_m": round(float(r.d_min)) if r.d_min is not None else None,
+                    "covers_neighbours_pct": round(min(100, 100 * float(r.surplus) / float(r.req_kw))) if r.req_kw else None})
+        features.append({"type": "Feature", "geometry": json.loads(r.g),
+                         "properties": {"bldg_uuid": r.uuid, "rank": k + 1, "value": round(float(r.surplus))}})
+    notes += [f"Kälteüberschuss = installierte Leistung erkannter Anlagen (KIT-Schätzung, Mittel) minus benötigte "
+              f"Leistung des Gebäudes; Nachbarn = beheizte Gebäude ohne erkannte Anlage im Umkreis von "
+              f"{params['radius']:.0f} m. Ohne Prozesskälte (Produktion, Kühlhaus, Lager, Rechenzentrum).",
+              "Große Unsicherheit: die installierte Leistung enthält Reserve/Überdimensionierung, die zeitliche "
+              "Verfügbarkeit (Lastgänge) und die Nutzung durch den Eigentümer sind unbekannt.", cooling.note(sc)]
+    fr = frame("features", [field("rank", "ordinal", "Rang"), field("bldg_uuid", "id", "Gebäude-ID"),
+                            field("address", "nominal", "Adresse"), field("building_function", "nominal", "Gebäudefunktion (ALKIS)"),
+                            field("installed_kw", "quantitative", "installierte Kälteleistung", "kW"),
+                            field("installed_min_kw", "quantitative", "installiert min", "kW"),
+                            field("installed_max_kw", "quantitative", "installiert max", "kW"),
+                            field("required_kw", "quantitative", "benötigte Kälteleistung", "kW"),
+                            field("surplus_kw", "quantitative", "Kälteüberschuss", "kW"),
+                            field("neighbours", "quantitative", "Nachbarn ohne Anlage", "Gebäude"),
+                            field("neighbours_required_kw", "quantitative", "deren benötigte Leistung", "kW"),
+                            field("neighbours_demand_mwh_a", "quantitative", "deren Kältebedarf", "MWh/a"),
+                            field("nearest_neighbour_m", "quantitative", "nächster Nachbar", "m"),
+                            field("covers_neighbours_pct", "quantitative", "Überschuss deckt Nachbarn zu", "%")],
+               out, ["chillers", "chiller_estimate", "cooling_mockup"], ids=[r["bldg_uuid"] for r in out], total=len(out),
+               query={"radius_m": params["radius"], **sc, "districts": districts, "scope": scope, "address": address,
+                      "place": place}, notes=notes)
+    return {"layer": "buildings", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
+            "summary_for_llm": {"buildings": out[:10], "notes": notes}}
+
+
 def building_scenario_demand(db: Session, bbox: str | None, polygon: dict | None = None, *,
                              compare_measures: list[str] | None = None, climate: str | None = None,
                              year: int | None = None, setpoint: float | None = None, top_n: int | None = None,
@@ -1211,6 +1521,12 @@ def _execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon
         tool_input["scope"], polygon = "berlin", None
     if name == "cooling_scenarios":
         return cooling_scenarios(db, bbox, polygon, **tool_input)
+    if name == "existing_networks":
+        return existing_networks(db, bbox, polygon, **tool_input)
+    if name == "block_electricity":
+        return block_electricity(db, bbox, polygon, **tool_input)
+    if name == "cooling_surplus":
+        return cooling_surplus(db, bbox, polygon, **tool_input)
     if name == "color_buildings":
         return color_buildings(db, bbox, polygon, **tool_input)
     if name == "aggregate_buildings":
