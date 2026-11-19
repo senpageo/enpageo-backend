@@ -130,10 +130,17 @@ METRIC_BANDS = {
 }
 
 
-CHECK_SQL = ", SUM(cact.cooling_kwh_mean) AS act, COUNT(cact.uuid) AS n_act"
-CHECK_FIELDS = [field("cooling_actual", "quantitative", "Kälteverbrauch erkannter Anlagen (Abgleich)", "kWh/a"),
-                field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude"),
-                field("coverage_pct", "quantitative", "Anteil des Bedarfs, den erkannte Anlagen decken", "%")]
+# Cross-check of a demand-based metric with the estimate from detected chillers: (SQL, fields)
+CHECKS = {
+    "cooling_demand": (", SUM(cact.cooling_kwh_mean) AS act, COUNT(cact.uuid) AS n_act",
+                       [field("cooling_actual", "quantitative", "Kälteverbrauch erkannter Anlagen (Abgleich)", "kWh/a"),
+                        field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude"),
+                        field("coverage_pct", "quantitative", "Anteil des Bedarfs, den erkannte Anlagen decken", "%")]),
+    "cooling_capacity": (", SUM(cact.capacity_kw_mean) AS act, COUNT(cact.uuid) AS n_act",
+                         [field("cooling_actual", "quantitative", "installierte Kälteleistung erkannter Anlagen (heute)", "kW"),
+                          field("buildings_with_chiller", "quantitative", "Gebäude mit erkannter Anlage", "Gebäude"),
+                          field("coverage_pct", "quantitative", "installiert heute im Verhältnis zu benötigt", "%")]),
+}
 
 
 def _check_values(r) -> dict:
@@ -621,8 +628,8 @@ def _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where
     """No grouping: one number for the whole area, optionally with its share of the unfiltered total."""
     band = METRIC_BANDS.get(metric)
     band_sql = f", {band[0]} AS vmin, {band[1]} AS vmax" if band else ""
-    check = metric == "cooling_demand"
-    band_sql += CHECK_SQL if check else ""
+    check = metric in CHECKS
+    band_sql += CHECKS[metric][0] if check else ""
     r = db.execute(text(f"SELECT {agg_sql} AS value, COUNT(*) AS n{band_sql} {_BASE} {join} WHERE 1=1 {where_area} {where_filter}"),
                    params).one()
     if r.n == 0:
@@ -635,7 +642,7 @@ def _single_value(db, metric, agg_sql, metric_field, metric_sources, join, where
         row[f"{metric}_min"] = round(float(r.vmin), 1) if r.vmin is not None else None
         row[f"{metric}_max"] = round(float(r.vmax), 1) if r.vmax is not None else None
     if check:
-        fields += CHECK_FIELDS
+        fields += CHECKS[metric][1]
         row.update(_check_values(r))
     if share_of_total and where_filter:
         area_params = {k: v for k, v in params.items() if not k.startswith(("usage_", "min_year", "max_year", "bf_", "min_pv"))}
@@ -691,8 +698,8 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
     select_keys = ", ".join(f"{k} AS g{n}" for n, k in enumerate(keys))
     group_keys = ", ".join(f"g{n}" for n in range(len(keys)))
     band_sql = f", {band[0]} AS vmin, {band[1]} AS vmax" if band else ""
-    check = metric == "cooling_demand"
-    band_sql += CHECK_SQL if check else ""
+    check = metric in CHECKS
+    band_sql += CHECKS[metric][0] if check else ""
     rows = db.execute(text(f"""
         SELECT {select_keys}, {agg_sql} AS value, COUNT(*) AS n{band_sql}
         {_BASE} {join}
@@ -720,7 +727,7 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
         out.sort(key=lambda r: order.index(r["construction_period"]))
 
     fields = ([GROUPS[g][1] for g in group_by] + [metric_field] + (_band_fields(metric, metric_field) if band else [])
-              + (CHECK_FIELDS if check else []))
+              + (CHECKS[metric][1] if check else []))
     if metric != "building_count":
         fields.append(METRICS["building_count"][1])
     sources = ["building_params", *metric_sources] + (["districts"] if (districts or "district" in group_by) else [])

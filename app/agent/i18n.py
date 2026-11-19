@@ -39,6 +39,8 @@ EXACT = {
     "Prozesswärme (KWW)": "Process heat (KWW)",
     "Ja": "Yes", "Nein": "No", "Ja/Nein": "Yes/No",
     "Straße": "Street",
+    "installierte Kälteleistung erkannter Anlagen (heute)": "Installed capacity of detected chillers (today)",
+    "installiert heute im Verhältnis zu benötigt": "Installed today relative to required",
     "Art": "Type", "Name": "Name", "Betreiber / Ansprechpartner": "Operator / contact", "Entfernung": "Distance",
     "Kälteleistung": "Cooling capacity", "Jahresarbeit": "Annual energy", "Trassenlänge": "Route length",
     "Vor-/Rücklauf": "Supply/return", "Hinweis": "Note", "Quelle": "Source", "Block": "Block",
