@@ -126,6 +126,18 @@ SOURCES: dict[str, dict] = {
         "license": None,
         "estimated": True,
     },
+    "cooling_mockup": {
+        "label": "Kältebedarf-Mockup je Gebäudefunktion und Baualtersklasse (Annahme)",
+        "tables": ["core_bldg.cooling_spec_demand", "core_bldg.climate_factor", "core_bldg.demand_measure",
+                   "core_bldg.cooling_setpoint", "core_bldg.f_building_demand", "core_bldg.line_density"],
+        "status": "2026-11-19, Platzhalter bis zur Simulation der Projektpartner",
+        "method": "kWh/(m²·a) Nutzkälte je GFK × Baualtersklasse (min/std/max) × beheizte Fläche, mit Klima-, "
+                  "Maßnahmen- und Sollwertfaktoren; Liniendichte = Bedarf der angeschlossenen Gebäude je Meter",
+        "accuracy": "Annahme, nur zur Veranschaulichung",
+        "reference_area": "beheizte Fläche (NGF nach KWW)",
+        "license": None,
+        "estimated": True,
+    },
     "building_params": {
         "label": "Gebäudeparameter (Nutzung, Baujahr, Flächen)",
         "tables": ["emc.param_building"],

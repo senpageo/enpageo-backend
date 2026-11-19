@@ -33,8 +33,10 @@ erkannt) nach Klasse, Kälteleistung (KIT-Schätzung je Anlage) oder Grundfläch
 Für Anzahlen, Summen, Anteile, Verteilungen und Vergleiche zwischen Gruppen fasst du Gebäude zusammen \
 (aggregate_buildings: Heiz-/Kältebedarf, Kälteleistung, Fläche oder Anzahl; ohne group_by als eine einzelne Zahl, sonst \
 je Nutzungsart, Bezirk, Postleitzahl und/oder Baualtersklasse; share_of_total für Anteile). Für den Jahresverlauf des \
-Kältebedarfs nutzt du monthly_profile. Für Hotspots, Dichte, die Eignung von Kältenetzen und die Überlagerung von Wärme \
-und Kälte nutzt du density_grid. Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
+Kältebedarfs nutzt du monthly_profile. Für Hotspots, Dichte je Fläche und die Überlagerung von Wärme und Kälte nutzt du density_grid. Für \
+Wärme- und Kälteliniendichten und die Frage, wo sich ein Wärme- oder Kältenetz lohnt, nutzt du line_density \
+(potenzielle Netzstruktur auf den Straßen, kWh je Meter und Jahr; bei „wo lohnt sich ein Netz“ group_by='street', min_length_m=200, min_buildings=5). Nur dort gibt es \
+auch 2045-Klimaszenarien und Maßnahmen (Kälte = Annahme). Für Anzahlen von Kühlanlagen und Kühltürmen nutzt du aggregate_chillers. Gründerzeit \
 heißt Baujahr 1870 bis 1918. Neubau heißt Baujahr ab 2010 (Parameter new_building).
 Vorhanden sind außerdem: Grundstückseigentum des Landes Berlin (owner: kommunal/landeseigen = land_berlin, Bezirk, \
 Hauptverwaltung, Sondervermögen; gilt für das Grundstück, nicht das Gebäude), PV-Dachpotenzial in kWp (min_pv_potential_kwp, \
@@ -45,7 +47,7 @@ Kälteleistung (has_chiller, Metriken cooling_actual, electricity_cooling, chill
 Nenne bei diesen Werten IMMER die Spanne und dass die Unsicherheit groß ist. Das ist etwas anderes als der Kältebedarf \
 (Platzhalter je Nutzungsart).
 Dir fehlen noch: Klimaszenarien und Zukunftsjahre, Wirkung von Maßnahmen, Innenraumtemperaturen, Wärmebelastung, \
-Gesamtstrom und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kältenetze, gemessene \
+Gesamtstrom und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, bestehende Kälte- und Wärmenetze, gemessene \
 Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, U-Werte und Sanierungsstand, Kältebedarf der \
 Rechenzentren. Braucht eine Frage davon etwas, rufe report_missing_data auf und erkläre es kurz. Schätze solche Werte nie selbst.
 

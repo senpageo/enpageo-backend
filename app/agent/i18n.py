@@ -38,6 +38,13 @@ EXACT = {
     "Wärmebedarf KWW (Heizung + Warmwasser)": "Heat demand KWW (heating + hot water)",
     "Prozesswärme (KWW)": "Process heat (KWW)",
     "Ja": "Yes", "Nein": "No", "Ja/Nein": "Yes/No",
+    "Straße": "Street",
+    "Wärmeliniendichte": "Heat line density",
+    "Kälteliniendichte (Platzhalter)": "Cooling line density (placeholder)",
+    "Wärmebedarf (KWW)": "Heat demand (KWW)",
+    "Abschnittslänge": "Section length",
+    "Kältebedarf-Mockup je Gebäudefunktion und Baualtersklasse (Annahme)":
+        "Cooling demand mock-up per building function and age class (assumption)",
     "ALKIS-Gebäudefunktion (GFK)": "ALKIS building function (GFK)",
     "Wärmebedarf nach KWW-Technikkatalog Wärmeplanung (08-2026, V1.1), Stand 2025":
         "Heat demand after the KWW heat-planning technology catalogue (08-2026, v1.1), 2025",
@@ -188,13 +195,32 @@ USAGE = {
     "Schwimmbad": "Swimming pool",
 }
 
+
+def _scenario_en(s: str) -> str:
+    return (s.replace("geringer Klimawandel", "low climate change").replace("mittlerer Klimawandel", "medium climate change")
+             .replace("starker Klimawandel", "strong climate change").replace("alle Maßnahmen", "all measures")
+             .replace("Sollwert", "setpoint"))
+
+
 PATTERNS = [
     (re.compile(r"^Anteil an (.+) gesamt$"), lambda m: f"Share of total {tr(m.group(1)).lower()}"),
     (re.compile(r"^Rasterzellen (\d+) m × (\d+) m, gezeigt werden die dichtesten (\d+)\. Kältewerte sind generische "
-                r"Platzhalter, keine Simulation\. Eine echte Liniendichte braucht das Straßennetz und fehlt noch\.$"),
+                r"Platzhalter, keine Simulation\.$"),
      lambda m: f"Grid cells {m.group(1)} m × {m.group(2)} m, showing the densest {m.group(3)}. Cooling values are "
-               "generic placeholders, not a simulation. A real linear density needs the street network, which is "
-               "still missing."),
+               "generic placeholders, not a simulation."),
+    (re.compile(r"^Szenario (.+)\. Liniendichte = Jahresbedarf der angeschlossenen beheizten Gebäude je Meter "
+                r"(Haupt- und Anschlussleitung|Straßenabschnitt) auf der potenziellen Netzstruktur \(kein bestehendes Netz\)\.$"),
+     lambda m: f"Scenario {_scenario_en(m.group(1))}. Line density = annual demand of the connected heated buildings "
+               f"per metre of {'main and connection line' if m.group(2).startswith('Haupt') else 'street section'} "
+               "on the potential network structure (not an existing network)."),
+    (re.compile(r"^Median im Gebiet (\d+) kWh/\(m·a\), Gesamtmittel (\d+) kWh/\(m·a\)\.$"),
+     lambda m: f"Median in the area {m.group(1)} kWh/(m·a), overall mean {m.group(2)} kWh/(m·a)."),
+    (re.compile(r"^Je höher die Liniendichte, desto günstiger für ein Netz; eine Wirtschaftlichkeitsprüfung ersetzt "
+                r"das nicht\.( Kältewerte sind Annahmen \(Mockup\), keine Simulation\.| Wärme nach KWW-Kennwerten "
+                r"\(Heizung \+ Warmwasser\)\.)$"),
+     lambda m: "The higher the line density, the more favourable for a network; it does not replace an economic "
+               "assessment." + (" Cooling values are assumptions (mock-up), not a simulation." if "Kälte" in m.group(1)
+                                else " Heat from KWW benchmarks (heating + hot water).")),
     (re.compile(r"^Fehlt noch: (.+)\.$"), lambda m: _missing(m.group(1))),
     (re.compile(r"^Gebäudedaten für (.+)$"), lambda m: f"Building data for {m.group(1)}"),
 ]

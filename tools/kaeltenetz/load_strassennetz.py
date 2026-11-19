@@ -19,6 +19,7 @@ jeweils an den nächsten Hauptnetz-Abschnitt, ohne Längengrenze (> --max-dist: 
 
 Aufruf: python load_strassennetz.py [--dsn ...] [--max-dist 150]   (Straßennetz neu laden + alle Anschlüsse)
         python load_strassennetz.py --sync                        (Anschlüsse auf den Gebäudebestand abgleichen)
+        python load_strassennetz.py --regeom                      (dazu alle Anschlussgeometrien neu berechnen)
 """
 from __future__ import annotations
 
@@ -58,6 +59,27 @@ def dsn_from_env_file() -> str:
     raise SystemExit("DATABASE_URL nicht in .env gefunden, bitte --dsn angeben")
 
 
+CONNECTION_FN = """
+CREATE OR REPLACE FUNCTION core_bldg.f_connection_line(p_street geometry, p_bldg geometry)
+RETURNS geometry LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+-- Anschlussleitung vom Straßenabschnitt zur Gebäudemitte: Startpunkt = Punkt der Straße, der dem Gebäudeinneren
+-- (ST_PointOnSurface) am nächsten liegt; die Leitung läuft von dort Richtung Gebäudemitte und endet an der ersten
+-- Gebäudekante, trifft die Fassade also etwa mittig. Fällt auf die kürzeste Linie zurück, wenn die Straße das Gebäude
+-- berührt oder kein Schnittpunkt entsteht.
+DECLARE c geometry; s geometry; hit geometry;
+BEGIN
+    c := ST_PointOnSurface(p_bldg);
+    s := ST_ClosestPoint(p_street, c);
+    IF ST_Intersects(s, p_bldg) THEN
+        RETURN ST_ShortestLine(p_street, p_bldg);
+    END IF;
+    hit := ST_Intersection(ST_MakeLine(s, c), ST_Boundary(p_bldg));
+    IF hit IS NULL OR ST_IsEmpty(hit) THEN
+        RETURN ST_ShortestLine(p_street, p_bldg);
+    END IF;
+    RETURN ST_MakeLine(s, ST_ClosestPoint(hit, s));
+END $$;"""
+
 BUILDINGS = """
     SELECT b.uuid, b.geom FROM emc.building b
     JOIN core_bldg.kww_gfk_mapping k ON k.gfk = b.gfk AND k.heated
@@ -65,7 +87,7 @@ BUILDINGS = """
       AND EXISTS (SELECT 1 FROM emc.district d WHERE ST_Intersects(d.geom, ST_PointOnSurface(b.geom)))"""
 
 
-def sync_connections(dsn: str, max_dist: float):
+def sync_connections(dsn: str, max_dist: float, regeom: bool = False):
     """Anschlussleitungen auf den Gebäudebestand abgleichen: alle beheizten Gebäude in Berlin (ALKIS-Gebäudefunktion,
     core_bldg.kww_gfk_mapping.heated) bekommen die kürzeste Leitung zum nächsten Hauptnetz-Abschnitt, ohne Längengrenze;
     länger als max_dist -> beyond_max_dist. Gebäude, die nicht mehr dazugehören, fallen heraus. Erkannte Kälteanlagen
@@ -73,6 +95,7 @@ def sync_connections(dsn: str, max_dist: float):
     t0 = time.perf_counter()
     with psycopg.connect(dsn) as con, con.cursor() as cur:
         cur.execute("ALTER TABLE core_bldg.network_connection ADD COLUMN IF NOT EXISTS beyond_max_dist boolean")
+        cur.execute(CONNECTION_FN)
         cur.execute(f"CREATE TEMP TABLE sel AS {BUILDINGS}")
         cur.execute("ALTER TABLE sel ADD PRIMARY KEY (uuid)")
         cur.execute("ANALYZE sel")
@@ -81,20 +104,30 @@ def sync_connections(dsn: str, max_dist: float):
         cur.execute("""
             INSERT INTO core_bldg.network_connection (uuid, segment_id, street_name, length_m, geom)
             SELECT bl.uuid, s.id, s.street_name,
-                   round(ST_Length(ST_ShortestLine(s.geom, bl.geom))::numeric, 1),
-                   ST_ShortestLine(s.geom, bl.geom)::geometry(LineString, 25833)
+                   round(ST_Length(core_bldg.f_connection_line(s.geom, bl.geom))::numeric, 1),
+                   core_bldg.f_connection_line(s.geom, bl.geom)::geometry(LineString, 25833)
             FROM sel bl
             CROSS JOIN LATERAL (
                 SELECT s.id, s.street_name, s.geom FROM core_base.street_segment s
                 WHERE s.is_main_network ORDER BY s.geom <-> bl.geom LIMIT 1) s
             WHERE NOT EXISTS (SELECT 1 FROM core_bldg.network_connection n WHERE n.uuid = bl.uuid)""")
         added = cur.rowcount
+        if regeom:
+            cur.execute("""
+                UPDATE core_bldg.network_connection n
+                SET geom = g.geom, length_m = round(ST_Length(g.geom)::numeric, 1)
+                FROM (SELECT n2.uuid, core_bldg.f_connection_line(s.geom, b.geom)::geometry(LineString, 25833) AS geom
+                      FROM core_bldg.network_connection n2
+                      JOIN core_base.street_segment s ON s.id = n2.segment_id
+                      JOIN emc.building b ON b.uuid = n2.uuid) g
+                WHERE g.uuid = n.uuid""")
+            print(f"Geometrie neu: {cur.rowcount} Anschlussleitungen")
         cur.execute("UPDATE core_bldg.network_connection SET beyond_max_dist = length_m > %s "
                     "WHERE beyond_max_dist IS DISTINCT FROM (length_m > %s)", (max_dist, max_dist))
         cur.execute(f"""
             COMMENT ON TABLE core_bldg.network_connection IS
               'Potenzielle Anschlussleitung je beheiztem Gebäude in Berlin: kürzeste Linie vom nächsten Hauptnetz-Abschnitt '
-              '(core_base.street_segment, is_main_network) zur Gebäudekante, ohne Längengrenze (beyond_max_dist: länger als '
+              '(core_base.street_segment, is_main_network) bis zur Fassade, Richtung Gebäudemitte (trifft die Fassade etwa mittig), ohne Längengrenze (beyond_max_dist: länger als '
               '{max_dist:.0f} m). Luftlinie ohne Hindernisse (Nachbargebäude, Gleise, Gewässer). Unabhängig von bestehenden '
               'Netzen und erkannten Kälteanlagen – Grundlage für Wärme- und Kälteliniendichten.'""")
         cur.execute("""
@@ -127,12 +160,14 @@ def main():
     ap.add_argument("--dsn")
     ap.add_argument("--max-dist", type=float, default=150,
                     help="Anschlüsse länger als das (m) werden als beyond_max_dist markiert, nicht weggelassen")
+    ap.add_argument("--regeom", action="store_true",
+                    help="wie --sync, zusätzlich alle Anschlussgeometrien neu (Richtung Gebäudemitte)")
     ap.add_argument("--sync", "--only-missing", dest="only_missing", action="store_true",
                     help="Straßennetz behalten, Anschlüsse nur auf den Gebäudebestand abgleichen (Minuten)")
     a = ap.parse_args()
     dsn = a.dsn or dsn_from_env_file()
-    if a.only_missing:
-        sync_connections(dsn, a.max_dist)
+    if a.only_missing or a.regeom:
+        sync_connections(dsn, a.max_dist, a.regeom)
         return
     rows = []
     for f in features("detailnetz:c_strassenabschnitte"):

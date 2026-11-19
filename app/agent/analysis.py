@@ -202,6 +202,38 @@ MONTHLY_PROFILE_SCHEMA = {
     "required": [],
 }
 
+LINE_DENSITY_SCENARIOS = ["2025", "2045_gering", "2045_mittel", "2045_stark", "2045_stark_massnahmen"]
+
+LINE_DENSITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "carrier": {"type": "string", "enum": ["heat", "cooling"],
+                    "description": "heat (Wärmeliniendichte, Wärmenetz) or cooling (Kälteliniendichte, Kältenetz)"},
+        "scenario": {"type": "string", "enum": LINE_DENSITY_SCENARIOS,
+                     "description": "2025 = today (default). 2045_gering/_mittel/_stark = 2045 with low/medium/strong "
+                                    "climate change; 2045_stark_massnahmen = strong climate change with external "
+                                    "shading, user ventilation, automatic night ventilation and setpoint 26 °C. "
+                                    "Only when the question names a future year, climate change or measures."},
+        "group_by": {"type": "string", "enum": ["segment", "street"],
+                     "description": "segment = single street sections (default, finest); street = whole streets "
+                                    "per district (demand summed over all sections / total length), for 'welche Straße'."},
+        "basis": {"type": "string", "enum": ["street", "trasse"],
+                  "description": "trasse = per metre of main line plus all house connection lines (default: a "
+                                 "network only pays off with the buildings connected); street = per metre of street "
+                                 "section only, like the Berlin heat plan maps (use when compared with those)"},
+        "min_length_m": {"type": "number",
+                         "description": "Leave out sections shorter than this (m). Use 50 for 'wo lohnt sich ein Netz', "
+                                        "so very short sections don't dominate (with group_by street: 200)."},
+        "min_buildings": {"type": "integer",
+                          "description": "Leave out sections/streets with fewer connected buildings. Use 5 for "
+                                         "'wo lohnt sich ein Netz', so a single large building is not called a network."},
+        "top_n": {"type": "integer", "description": "Keep the n highest, default 300, max 2000"},
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+    },
+    "required": ["carrier"],
+}
+
 TOOLS = [
     {
         "name": "aggregate_buildings",
@@ -226,10 +258,22 @@ TOOLS = [
         "name": "density_grid",
         "description": (
             "Density on a regular grid, shown on the map: where cooling demand or capacity is concentrated, or where "
-            "heating and cooling demand overlap. Use for hotspots, Dichte, and the suitability of cooling networks "
-            "or combined heating and cooling supply."
+            "heating and cooling demand overlap. Use for hotspots, Dichte (per area) and combined heating and cooling supply. "
+            "For network suitability along streets and Liniendichte use line_density instead."
         ),
         "input_schema": DENSITY_GRID_SCHEMA,
+    },
+    {
+        "name": "line_density",
+        "description": (
+            "Heat or cooling line density (Wärme-/Kälteliniendichte, kWh per metre and year) along the potential "
+            "network on Berlin's streets, shown on the map as coloured street sections with their house connection lines. Use for 'wo ist die "
+            "Kälteliniendichte / Wärmeliniendichte am höchsten', 'wo lohnt sich ein Kältenetz / Wärmenetz am meisten', "
+            "network suitability along streets. Higher line density = more demand per metre of pipe = more favourable "
+            "for a network. Heat = KWW (heating + hot water); cooling = placeholder assumption, not a simulation. "
+            "Also has 2045 climate scenarios and measures, but only for this line density."
+        ),
+        "input_schema": LINE_DENSITY_SCHEMA,
     },
     {
         "name": "aggregate_chillers",
@@ -262,7 +306,7 @@ MISSING = {
     "pv": ("PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude",
            "Dachpotenzial (kWp) und Anlagen ab 30 kWp bzw. der öffentlichen Hand sind da (find_buildings), kleine Anlagen nur je PLZ"),
     "cooling_networks": ("Bestehende Kältenetze (Lage, Betreiber, Kapazität)",
-                         "sind noch nicht im Datenbestand; das Straßennetz als mögliche Trasse und die Anschlusslängen je Gebäude sind da"),
+                         "sind noch nicht im Datenbestand; die potenzielle Netzstruktur auf dem Straßennetz und Wärme-/Kälteliniendichten sind da (line_density)"),
     "chiller_capacity": ("gemessene Kälteleistungen je erkannter Anlage",
                          "es gibt die KIT-Schätzung je Anlage aus dem Luftbild (Metrik chiller_capacity, mit Spanne; find_chillers je Anlage)"),
     "other_city": ("Gebäudedaten außerhalb Berlins", "Stuttgart und Korbach folgen im Projekt, weitere Städte sind nicht vorgesehen"),
@@ -533,10 +577,127 @@ def density_grid(db: Session, bbox: str | None, polygon: dict | None = None, *, 
                query={"metric": metric, "cell_m": cell, "districts": districts, "scope": scope,
                       "usage_zone_type": usage_zone_type},
                notes=[f"Rasterzellen {cell} m × {cell} m, gezeigt werden die dichtesten {len(out)}. Kältewerte sind "
-                      "generische Platzhalter, keine Simulation. Eine echte Liniendichte braucht das Straßennetz und fehlt noch."])
+                      "generische Platzhalter, keine Simulation."])
     fr["geo"] = True
     return {"layer": "cells", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
             "summary_for_llm": {"cells": len(out), "highest": out[0] if out else None, "unit": unit, "metric": label}}
+
+
+LINE_DENSITY_LABEL = {
+    "2025": "2025", "2045_gering": "2045, geringer Klimawandel", "2045_mittel": "2045, mittlerer Klimawandel",
+    "2045_stark": "2045, starker Klimawandel",
+    "2045_stark_massnahmen": "2045, starker Klimawandel, alle Maßnahmen, Sollwert 26 °C",
+}
+
+
+def line_density(db: Session, bbox: str | None, polygon: dict | None = None, *, carrier: str = "cooling",
+                 scenario: str | None = None, group_by: str | None = None, basis: str | None = None,
+                 min_length_m: float | None = None, min_buildings: int | None = None, top_n: int | None = None, districts: list[str] | None = None,
+                 scope: str | None = None, **_) -> dict:
+    carrier = "heat" if carrier == "heat" else "cooling"
+    scenario = scenario if scenario in LINE_DENSITY_LABEL else "2025"
+    trasse = basis != "street"
+    by_street = group_by == "street"
+    top = max(1, min(int(top_n or 300), 2000))
+    params: dict = {"scenario": scenario, "top": top, "min_len": float(min_length_m or 0),
+                    "min_n": int(min_buildings or 0)}
+    where = ["l.scenario = :scenario"]
+    if districts:
+        ors = []
+        for k, name in enumerate(districts):
+            params[f"district_{k}"] = f"%{name}%"
+            ors.append(f"l.district ILIKE :district_{k}")
+        where.append(f"({' OR '.join(ors)})")
+    elif polygon:
+        where.append(f"ST_Intersects(l.geom, {_build_search_geom_expr(polygon, None, params)})")
+    elif scope != "berlin" and bbox:
+        try:
+            min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
+            where.append("l.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)")
+            params.update({"min_lon": min_lon, "min_lat": min_lat, "max_lon": max_lon, "max_lat": max_lat})
+        except ValueError:
+            pass
+    mwh = "l.heat_mwh_a" if carrier == "heat" else "l.cooling_mwh_a"
+    length = "(l.street_m + l.connection_m)" if trasse else "l.street_m"
+    key = "l.street_name, l.district" if by_street else "l.segment_id, l.street_name, l.district"
+    rows = db.execute(text(f"""
+        WITH g AS (
+            SELECT {key}, SUM({mwh}) AS mwh, SUM({length}) AS len, SUM(l.street_m) AS street_m,
+                   SUM(l.n_buildings) AS n, array_agg(l.segment_id) AS seg_ids,
+                   ST_LineMerge(ST_Collect(l.geom)) AS geom
+            FROM core_base.v_line_density l
+            WHERE {' AND '.join(where)}
+            GROUP BY {key}
+            HAVING SUM(l.street_m) >= :min_len AND SUM(l.n_buildings) >= :min_n AND SUM({mwh}) > 0
+        ), ranked AS (
+            SELECT *, mwh * 1000 / NULLIF(len, 0) AS value, COUNT(*) OVER () AS total
+            FROM g
+        )
+        SELECT street_name, district, value, mwh, street_m, n, total, seg_ids,
+               ST_AsGeoJSON(ST_Transform(ST_Simplify(geom, 1), 4326), 6) AS geom,
+               ST_X(ST_Transform(ST_PointOnSurface(geom), 4326)) AS lon,
+               ST_Y(ST_Transform(ST_PointOnSurface(geom), 4326)) AS lat
+        FROM ranked ORDER BY value DESC NULLS LAST LIMIT :top
+    """), params).all()
+    median = db.execute(text(f"""
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY {mwh} * 1000 / NULLIF({length}, 0)) AS m,
+               SUM({mwh}) * 1000 / NULLIF(SUM({length}), 0) AS mean
+        FROM core_base.v_line_density l WHERE {' AND '.join(where)} AND l.street_m >= :min_len"""), params).one()
+    label = ("Wärmeliniendichte" if carrier == "heat" else "Kälteliniendichte (Platzhalter)")
+    unit = "kWh/(m·a)"
+    features, out, seg_rank = [], [], {}
+    for k, r in enumerate(rows):
+        v = round(float(r.value))
+        props = {"rank": k + 1, "value": v, "carrier": carrier, "street_name": r.street_name,
+                 "district": r.district, "building_count": int(r.n)}
+        features.append({"type": "Feature", "geometry": json.loads(r.geom), "properties": props})
+        for sid in r.seg_ids:
+            seg_rank[sid] = (k + 1, v)
+        out.append({"rank": k + 1, "street_name": r.street_name, "district": r.district, "value": v,
+                    "demand_mwh_a": round(float(r.mwh)), "length_m": round(float(r.street_m)),
+                    "building_count": int(r.n), "lon": round(r.lon, 5), "lat": round(r.lat, 5)})
+    # house connection lines of the shown sections: a network only pays off with the buildings connected
+    n_conn = 0
+    if seg_rank:
+        conns = db.execute(text("""
+            SELECT c.segment_id, c.length_m, ST_AsGeoJSON(ST_Transform(c.geom, 4326), 6) AS geom
+            FROM core_bldg.network_connection c WHERE c.segment_id = ANY(:ids) LIMIT 20000"""),
+                           {"ids": list(seg_rank)}).all()
+        for c in conns:
+            rank, v = seg_rank[c.segment_id]
+            features.append({"type": "Feature", "geometry": json.loads(c.geom),
+                             "properties": {"kind": "anschluss", "rank": rank, "value": v, "carrier": carrier,
+                                            "length_m": float(c.length_m)}})
+        n_conn = len(conns)
+    total = int(rows[0].total) if rows else 0
+    demand_label = "Wärmebedarf (KWW)" if carrier == "heat" else "Kältebedarf (Platzhalter)"
+    notes = [f"Szenario {LINE_DENSITY_LABEL[scenario]}. Liniendichte = Jahresbedarf der angeschlossenen beheizten "
+             f"Gebäude je Meter {'Haupt- und Anschlussleitung' if trasse else 'Straßenabschnitt'} auf der "
+             "potenziellen Netzstruktur (kein bestehendes Netz)."]
+    if median.m is not None:
+        notes.append(f"Median im Gebiet {round(median.m)} kWh/(m·a), Gesamtmittel {round(median.mean)} kWh/(m·a).")
+    notes.append("Je höher die Liniendichte, desto günstiger für ein Netz; eine Wirtschaftlichkeitsprüfung ersetzt "
+                 "das nicht." + (" Kältewerte sind Annahmen (Mockup), keine Simulation." if carrier == "cooling"
+                                 else " Wärme nach KWW-Kennwerten (Heizung + Warmwasser)."))
+    sources = ["street_network", "kww_heat" if carrier == "heat" else "cooling_mockup"]
+    fr = frame("features",
+               [field("rank", "ordinal", "Rang"), field("street_name", "nominal", "Straße"),
+                field("district", "nominal", "Bezirk"), field("value", "quantitative", label, unit),
+                field("demand_mwh_a", "quantitative", demand_label, "MWh/a"),
+                field("length_m", "quantitative", "Abschnittslänge", "m"),
+                field("building_count", "quantitative", "Anzahl Gebäude", "Gebäude"),
+                field("lon", "ordinal", "Länge"), field("lat", "ordinal", "Breite")],
+               out, sources, total=total,
+               query={"carrier": carrier, "scenario": scenario, "group_by": group_by or "segment",
+                      "basis": "trasse" if trasse else "street", "min_length_m": min_length_m, "min_buildings": min_buildings, "districts": districts, "scope": scope},
+               notes=notes)
+    fr["geo"] = True
+    return {"layer": f"{carrier}_lines", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
+            "summary_for_llm": {"shown": len(out), "total_sections": total, "unit": unit, "metric": label,
+                                "scenario": LINE_DENSITY_LABEL[scenario], "top": out[:10],
+                                "median_in_area": round(median.m) if median.m is not None else None,
+                                "connection_lines_shown": n_conn,
+                                "notes": notes}}
 
 
 CHILLER_GROUPS = {"cooling_tower": "c.class LIKE 'CT_%'", "air_cooled": "c.class LIKE 'ACC_%'",
@@ -604,6 +765,8 @@ def execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon:
         return monthly_profile(db, bbox, polygon, **tool_input)
     if name == "density_grid":
         return density_grid(db, bbox, polygon, **tool_input)
+    if name == "line_density":
+        return line_density(db, bbox, polygon, **tool_input)
     if name == "aggregate_chillers":
         return aggregate_chillers(db, bbox, polygon, **tool_input)
     if name == "report_missing_data":
