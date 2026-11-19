@@ -55,3 +55,19 @@ Validierung (offen): Kältebedarf aus der BGF gegen die Ist-Schätzung, je Gebä
 Stand 17.11.2026 (KIT-Liste 2026): 5.891 Anlagen, 5.149 einem Gebäude zugeordnet, 229 Kraftwerkskühltürme
 (214 MW) ausgeschlossen; 2.847 versorgte Gebäude, ~1,46 GW, Kälte ~1,3 TWh/a (Band 0,3–4,0), Strom ~0,47 TWh/a.
 Vorher (Flächenschätzung, Liste 2025): 1.979 Gebäude, ~2,2 GW, Kälte ~1,8 TWh/a.
+
+## Kältebedarf-Mockup mit Klima, Maßnahmen und Sollwert (`kaeltebedarf_mockup.sql`)
+
+Platzhalter, bis die Projektpartner simulieren. Tabellen `core_bldg.cooling_age_class`, `cooling_spec_demand`
+(kWh/(m²·a) Nutzkälte je GFK × Baualtersklasse, min/std/max, Bezug NGF, witterungsbereinigt), `climate_scenario`,
+`climate_factor` (gering/mittel/stark, % je Stützjahr 2025–2050), `demand_measure` (außenliegende Verschattung,
+Nutzerlüftung, automatische Nachtlüftung), `cooling_setpoint` (22/24/26 °C, % je K gegenüber dem Bezug nach
+DIN V 18599-10), `heat_dhw_share`. Fast alle Werte: Annahme (Spalte `source`).
+
+```sql
+SELECT * FROM core_bldg.f_building_demand('stark', 2045, '{verschattung_aussen,nachtlueftung_auto}', 26);
+```
+
+Ergibt je beheiztem Gebäude Kälte min/std/max und Wärme (KWW, Pfad 2025 → 2045 linear, Klima nur auf Raumwärme).
+Berlin 2025 mittel: Kälte 3,3 TWh/a (1,2–7,8), Wärme 23,8 TWh/a; ganze Stadt in ~13 s.
+Neulauf des Skripts setzt alle Werte zurück.
