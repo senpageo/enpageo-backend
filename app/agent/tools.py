@@ -458,7 +458,7 @@ FIND_BUILDINGS_SCHEMA = {
         "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
         "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue; u_mean / u_wall / u_window = worst (highest) typical U-values ('schlechteste U-Werte')"},
         **SELECTION_PROPS,
-        "min_pet_14h": {"type": "number", "description": "Minimum heat stress by day (PET at 2 pm, °C) at the building; 35 = strong, 41 = extreme"},
+        "min_pet_14h": {"type": "number", "description": "Minimum heat stress by day (PET at 2 pm, °C) at the building. ALWAYS set it when the question asks for buildings with high/strong heat stress (35) or extreme heat stress (41); without it the results are not selected by heat."},
         "heat_vulnerable": {"type": "boolean", "description": "true: only buildings in areas with very unfavourable heat stress day and night or climatically vulnerable areas (Planungshinweiskarte Stadtklima 2022)"},
         "min_cooling_demand": {"type": "number", "description": "Minimum annual cooling demand in kWh"},
         "max_cooling_demand": {"type": "number", "description": "Maximum annual cooling demand in kWh"},
@@ -943,7 +943,8 @@ def _execute_find_buildings(
                "has_chiller": has_chiller, "districts": districts, "scope": scope, "near_place": near_place,
                "max_distance_m": max_distance_m, "sort_by": sort_by, "building_function": building_function,
                "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
-               "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center, **sc},
+               "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center, **sc,
+               "min_pet_14h": min_pet_14h, "heat_vulnerable": heat_vulnerable, "address": address, "place": place},
         notes=notes + [cooling.note(sc), "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme).",
                        ENVELOPE_NOTE, CLIMATE_NOTE]
               + ([cooling.ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
@@ -958,6 +959,12 @@ def _execute_find_buildings(
             "returned": len(features),
             "truncated": total > len(features),
             "cooling_scenario": cooling.label(sc),
+            "heat_filter": (f"min_pet_14h = {min_pet_14h} °C" if min_pet_14h is not None else
+                            "KEIN Hitze-Filter: die Treffer sind nicht nach Wärmebelastung ausgewählt"),
+            "pet_14h_of_returned": {
+                "mean": round(sum(p) / len(p), 1) if (p := [f["properties"]["pet_14h"] for f in features if f["properties"]["pet_14h"] is not None]) else None,
+                "count_over_35": sum(1 for v in p if v > 35), "count_over_41": sum(1 for v in p if v > 41),
+                "returned_with_value": len(p)},
             "heat_stress_top": [{"building_function": f["properties"]["building_function"],
                                  "pet_14h": f["properties"]["pet_14h"], "t_air_04h": f["properties"]["t_air_04h"],
                                  "bioclimate": f["properties"]["bioclimate"]} for f in features[:5]]
