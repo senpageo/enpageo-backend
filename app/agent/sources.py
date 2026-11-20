@@ -83,6 +83,17 @@ SOURCES: dict[str, dict] = {
         "license": "MIT (SDM_NaiS-DB)",
         "estimated": True,
     },
+    "climate_model": {
+        "label": "Klimamodell Berlin 2022 (Umweltatlas): Wärmebelastung je Block(teil)fläche",
+        "tables": ["core_base.climate_area", "core_base.climate_vulnerable", "core_bldg.building_climate"],
+        "status": "2026-11-20 geladen (gdi.berlin.de WFS ua_klimaanalyse_2022, ua_klimabewertung_2022)",
+        "method": "Stadtklimamodell (FITNAH) für eine austauscharme sommerliche Strahlungswetterlage; PET 14 Uhr, "
+                  "Lufttemperatur 4 Uhr, Bewertung und Planungshinweise; Gebäude über die Fläche darunter",
+        "accuracy": "Modellwerte je Block(teil)fläche, nicht je Gebäude; Ist-Zustand ohne Klimaszenarien",
+        "reference_area": None,
+        "license": "Datenlizenz Deutschland Zero 2.0",
+        "estimated": True,
+    },
     "heat_networks": {
         "label": "Wärmenetze: Fern- und Nahwärmeversorgung 2022 (200-m-Raster) und Nahwärmenetze je Teilblock",
         "tables": ["core_base.heat_supply_cell", "core_base.local_heat_network"],

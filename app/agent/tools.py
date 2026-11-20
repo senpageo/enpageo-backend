@@ -198,7 +198,8 @@ KWW_JOINS = f"""
         LEFT JOIN core_bldg.data_center_building dcb ON dcb.uuid = b.uuid
         LEFT JOIN core_bldg.cooling_estimate_building cact ON cact.uuid = b.uuid
         LEFT JOIN core_bldg.network_connection ncon ON ncon.uuid = b.uuid
-        LEFT JOIN core_bldg.envelope_building env ON env.uuid = b.uuid"""
+        LEFT JOIN core_bldg.envelope_building env ON env.uuid = b.uuid
+        LEFT JOIN core_bldg.building_climate bcl ON bcl.uuid = b.uuid"""
 
 # Actual cooling from detected chillers (tools/kaelte/kaelte_ist_schaetzung.py): rough, with a min-max band
 COOLING_ACTUAL_NOTE = (
@@ -397,7 +398,10 @@ FIND_BUILDINGS_SORT = {
     "u_mean": "u_mean",
     "u_wall": "u_wall",
     "u_window": "u_window",
+    "pet_14h": "pet_14h",
+    "t_air_04h": "t_air_04h",
 }
+CLIMATE_NOTE = "Wärmebelastung: Klimamodell Berlin 2022 (Umweltatlas) für eine austauscharme sommerliche Strahlungswetterlage, Ist-Zustand; PET = gefühlte Temperatur um 14 Uhr, Lufttemperatur um 4 Uhr = nächtliche Überwärmung, je Block(teil)fläche."
 ENVELOPE_NOTE = "U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt."
 
 BUILDING_FUNCTION_PROP = {
@@ -454,6 +458,8 @@ FIND_BUILDINGS_SCHEMA = {
         "max_distance_m": {"type": "number", "description": "With near_place: maximum distance in meters (3 km = 3000)"},
         "sort_by": {"type": "string", "enum": list(FIND_BUILDINGS_SORT), "description": "What the largest results are sorted by (rankings, 'höchster ...'); default cooling_annual. kww_heat_demand = heat demand after the KWW catalogue; u_mean / u_wall / u_window = worst (highest) typical U-values ('schlechteste U-Werte')"},
         **SELECTION_PROPS,
+        "min_pet_14h": {"type": "number", "description": "Minimum heat stress by day (PET at 2 pm, °C) at the building; 35 = strong, 41 = extreme"},
+        "heat_vulnerable": {"type": "boolean", "description": "true: only buildings in areas with very unfavourable heat stress day and night or climatically vulnerable areas (Planungshinweiskarte Stadtklima 2022)"},
         "min_cooling_demand": {"type": "number", "description": "Minimum annual cooling demand in kWh"},
         "max_cooling_demand": {"type": "number", "description": "Maximum annual cooling demand in kWh"},
         **cooling.SCENARIO_PROPS,
@@ -666,6 +672,8 @@ def _execute_find_buildings(
     setpoint: float | None = None,
     address: str | None = None,
     place: str | None = None,
+    min_pet_14h: float | None = None,
+    heat_vulnerable: bool | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
@@ -738,6 +746,11 @@ def _execute_find_buildings(
         sources.append("chillers")
         if has_chiller is False:
             notes.append("„Keine Kühlanlage“ heißt: im Luftbild nichts erkannt. Innenliegende Anlagen sieht die Erkennung nicht.")
+    if min_pet_14h is not None:
+        conditions.append("bcl.pet14h >= :min_pet_14h")
+        params["min_pet_14h"] = min_pet_14h
+    if heat_vulnerable is not None:
+        conditions.append(("" if heat_vulnerable else "NOT ") + "COALESCE(bcl.very_unfavourable OR bcl.vulnerable_area, false)")
     if min_cooling_demand is not None:
         conditions.append(f"({COOLING_ANNUAL_EXPR}) >= :min_cooling_demand")
         params["min_cooling_demand"] = min_cooling_demand
@@ -809,6 +822,8 @@ def _execute_find_buildings(
                 ncon.length_m AS connection_length_m,
                 env.u_wall, env.u_wall_se, env.u_roof, env.u_roof_se, env.u_floor, env.u_floor_se,
                 env.u_window, env.u_window_se, env.u_mean, env.source AS envelope_source, env.envelope_type,
+                bcl.pet14h AS pet_14h, bcl.t2m04h AS t_air_04h, bcl.rating AS bioclimate,
+                bcl.very_unfavourable AS heat_very_unfavourable, bcl.vulnerable_area AS heat_vulnerable_area,
                 pb."Year of construction" AS year_built,
                 CASE WHEN pb."Year of construction" ~ '^[0-9]+$' THEN pb."Year of construction"::int END AS year_built_int
             {base_from} {where_extra}
@@ -843,7 +858,10 @@ def _execute_find_buildings(
                    for k in ("cooling_actual_kwh", "cooling_actual_min", "cooling_actual_max", "electricity_cooling_kwh",
                              "electricity_cooling_min", "electricity_cooling_max", "chiller_capacity_kw",
                              "connection_length_m", "u_wall", "u_wall_se", "u_roof", "u_roof_se", "u_floor",
-                             "u_floor_se", "u_window", "u_window_se", "u_mean")},
+                             "u_floor_se", "u_window", "u_window_se", "u_mean", "pet_14h", "t_air_04h")},
+                "bioclimate": row.bioclimate,
+                "heat_very_unfavourable": row.heat_very_unfavourable,
+                "heat_vulnerable_area": row.heat_vulnerable_area,
                 "envelope_source": row.envelope_source,
                 "chiller_check": row.chiller_check or None,
             },
@@ -903,6 +921,11 @@ def _execute_find_buildings(
             field("u_window", "quantitative", "U-Wert Fenster", "W/(m²K)"),
             field("u_window_se", "quantitative", "U-Wert Fenster ±", "W/(m²K)"),
             field("envelope_source", "nominal", "Quelle U-Werte"),
+            field("pet_14h", "quantitative", "Wärmebelastung am Tag (PET 14 Uhr)", "°C"),
+            field("t_air_04h", "quantitative", "Lufttemperatur nachts (4 Uhr)", "°C"),
+            field("bioclimate", "nominal", "Bioklimatische Bewertung"),
+            field("heat_very_unfavourable", "nominal", "sehr ungünstig belastetes Gebiet"),
+            field("heat_vulnerable_area", "nominal", "stadtklimatisch vulnerables Gebiet"),
         ],
         [
             {k: (round(float(v), 1) if k in ("heating_demand", "kww_heat_demand") and v is not None else v)
@@ -922,7 +945,7 @@ def _execute_find_buildings(
                "process_heat": process_heat, "owner": owner, "new_building": new_building, "has_pv": has_pv,
                "min_pv_potential_kwp": min_pv_potential_kwp, "data_center": data_center, **sc},
         notes=notes + [cooling.note(sc), "Benötigte Kälteleistung = Kältebedarf / Volllaststunden der Nutzung (Annahme).",
-                       ENVELOPE_NOTE]
+                       ENVELOPE_NOTE, CLIMATE_NOTE]
               + ([cooling.ACTUAL_NOTE] if any(f["properties"]["cooling_actual_kwh"] for f in features) else []),
     )
 
@@ -935,6 +958,10 @@ def _execute_find_buildings(
             "returned": len(features),
             "truncated": total > len(features),
             "cooling_scenario": cooling.label(sc),
+            "heat_stress_top": [{"building_function": f["properties"]["building_function"],
+                                 "pet_14h": f["properties"]["pet_14h"], "t_air_04h": f["properties"]["t_air_04h"],
+                                 "bioclimate": f["properties"]["bioclimate"]} for f in features[:5]]
+                               if sort_by in ("pet_14h", "t_air_04h") or min_pet_14h is not None else None,
             "standard_scenario": cooling.is_standard(sc),
             "sum_cooling_demand_kwh": round(sum(cooling_values)) if cooling_values else None,
             "avg_cooling_demand_kwh": round(sum(cooling_values) / len(cooling_values), 1) if cooling_values else None,

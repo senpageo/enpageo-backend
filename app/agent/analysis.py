@@ -104,6 +104,10 @@ METRICS = {
     "waste_heat_power_actual": ("SUM(cact.capacity_kw_mean * (1 + cact.electricity_kwh_mean / NULLIF(cact.cooling_kwh_mean, 0)))",
                                 field("waste_heat_power_actual", "quantitative", "Abwärmeleistung erkannter Kälteanlagen",
                                       "kW"), ["chillers", "chiller_estimate"]),
+    "pet_14h": ("AVG(bcl.pet14h)", field("pet_14h", "quantitative", "Wärmebelastung am Tag (PET 14 Uhr, Mittel der Gebäude)", "°C"),
+                ["climate_model"]),
+    "t_air_04h": ("AVG(bcl.t2m04h)", field("t_air_04h", "quantitative", "Lufttemperatur nachts (4 Uhr, Mittel der Gebäude)", "°C"),
+                  ["climate_model"]),
     "u_mean": ("AVG(env.u_mean)", field("u_mean", "quantitative", "mittlerer U-Wert (typisch, Mittel der Gebäude)", "W/(m²K)"),
                ["envelope_nais"]),
     "heated_area": ('SUM(pb."Heated area")', field("heated_area", "quantitative", "beheizte Fläche", "m²"),
@@ -191,7 +195,8 @@ AGGREGATE_BUILDINGS_SCHEMA = {
                                   "chillers: demand / EER, 'Strombedarf für Kühlung'), electric_power_cooling (kW), "
                                   "waste_heat_demand (heat rejected by chillers meeting the demand), waste_heat_actual / "
                                   "waste_heat_power_actual (Abwärme of detected chillers, kWh / kW), u_mean (mean typical "
-                                  "U-value of the buildings, NaiS-DB), heated_area, "
+                                  "U-value of the buildings, NaiS-DB), pet_14h / t_air_04h (mean heat stress by day / night "
+                                  "air temperature at the buildings, climate model 2022), heated_area, "
                                   "building_count"},
         "group_by": {"type": "array", "items": {"type": "string", "enum": list(GROUPS)}, "minItems": 0,
                      "maxItems": 2,
@@ -260,6 +265,36 @@ MONTHLY_PROFILE_SCHEMA = {
         "top_n": {"type": "integer", "description": "With group_by: keep the n groups with the largest demand"},
         **_FILTER_PROPS,
         **cooling.SCENARIO_PROPS,
+    },
+    "required": [],
+}
+
+HEAT_STRESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "time": {"type": "string", "enum": ["day", "night"],
+                 "description": "day: heat stress at 2 pm (PET, gefühlte Temperatur), default; night: air temperature at "
+                                "4 am (nächtliche Überwärmung, Tropennächte)"},
+        "areas": {"type": "array", "items": {"type": "string", "enum": ["settlement", "streets", "green"]},
+                  "description": "Which areas: settlement (built-up blocks, default), streets, green (parks, open space)"},
+        "vulnerable_only": {"type": "boolean",
+                            "description": "Only areas the city rates as very unfavourable day and night or climatically "
+                                           "vulnerable (Planungshinweiskarte Stadtklima 2022)"},
+        "top_n": {"type": "integer", "description": "Areas listed in the table, default 20"},
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
+COOL_PLACES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "max_distance_m": {"type": "number", "description": "Search radius around the address/place or map centre, default 2000 (10 km = 10000)"},
+        "min_area_m2": {"type": "number", "description": "Minimum size of the green space, default 2000"},
+        "top_n": {"type": "integer", "description": "Number of places, default 5"},
+        **SELECTION_PROPS,
     },
     "required": [],
 }
@@ -343,6 +378,8 @@ COLOR_METRICS = {
     "u_mean": ("env.u_mean", "mittlerer U-Wert (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
     "u_wall": ("env.u_wall", "U-Wert Wand (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
     "u_window": ("env.u_window", "U-Wert Fenster (typisch)", "W/(m²K)", "warm", ["envelope_nais"]),
+    "pet_14h": ("bcl.pet14h", "Wärmebelastung am Tag (PET 14 Uhr)", "°C", "warm", ["climate_model"]),
+    "t_air_04h": ("bcl.t2m04h", "Lufttemperatur nachts (4 Uhr)", "°C", "warm", ["climate_model"]),
 }
 
 COLOR_BUILDINGS_SCHEMA = {
@@ -408,6 +445,25 @@ LINE_DENSITY_SCHEMA = {
 }
 
 TOOLS = [
+    {
+        "name": "heat_stress_map",
+        "description": (
+            "Outdoor heat stress from the Berlin climate model 2022 (current state, hot summer day): blocks, streets "
+            "or green spaces coloured by heat stress at 2 pm (PET) or night air temperature at 4 am, with the hottest "
+            "areas listed; optionally only areas the city rates as very unfavourable or vulnerable. Use for 'wo ist "
+            "die Wärmebelastung am höchsten', 'Hitze-Hotspots', 'Tropennächte', 'Schwerpunkte der Wärmebelastung'. "
+            "For buildings with high heat stress use find_buildings (min_pet_14h, sort_by pet_14h, has_chiller=false)."
+        ),
+        "input_schema": HEAT_STRESS_SCHEMA,
+    },
+    {
+        "name": "cool_places",
+        "description": (
+            "The coolest green and open spaces near an address, a place or the map centre on a hot day (lowest PET "
+            "at 2 pm, climate model 2022), with distance. Use for 'wo gibt es kühlere Orte während einer Hitzewelle'."
+        ),
+        "input_schema": COOL_PLACES_SCHEMA,
+    },
     {
         "name": "existing_networks",
         "description": (
@@ -536,7 +592,8 @@ MISSING = {
     "measures": ("Simulierte Wirkungen von Maßnahmen und Sanierungen auf den Kältebedarf",
                  "kommen aus der Simulation im Projekt; Annahmen (Mockup) für Verschattung und Lüftung gibt es schon (building_scenario_demand)"),
     "indoor_temperature": ("Innenraumtemperaturen und Überhitzungsstunden", "kommen aus der Simulation im Projekt"),
-    "outdoor_heat": ("Angaben zur Wärmebelastung im Außenraum", "die Einbindung der HOSTRADA-Klimadaten ist geplant"),
+    "outdoor_heat": ("Wärmebelastung im Außenraum für künftige Jahre und Klimaszenarien",
+                     "sind noch nicht im Datenbestand; den Ist-Zustand (Klimamodell 2022) gibt es (heat_stress_map, cool_places)"),
     "electricity": ("Strom nach Verbrauchern (Haushalt, Gewerbe) und Lastgänge",
                     "sind noch nicht im Datenbestand; der Stromverbrauch je Block (2021) und der Kältestrom sind da (block_electricity)"),
     "pv": ("PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude",
@@ -738,6 +795,8 @@ def aggregate_buildings(db: Session, bbox: str | None, polygon: dict | None = No
         notes.append(COOLING_ACTUAL_NOTE)
     elif metric in SCENARIO_METRICS:
         notes += cooling_notes
+    elif metric in ("pet_14h", "t_air_04h"):
+        notes.append("Wärmebelastung: Klimamodell Berlin 2022 (Umweltatlas) für eine austauscharme sommerliche Strahlungswetterlage, Ist-Zustand; PET = gefühlte Temperatur um 14 Uhr, Lufttemperatur um 4 Uhr = nächtliche Überwärmung, je Block(teil)fläche.")
     elif metric == "u_mean":
         notes.append("U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt.")
     fr = frame("aggregate", fields, out, sources, hierarchy=group_by if len(group_by) > 1 else None,
@@ -992,6 +1051,8 @@ def color_buildings(db: Session, bbox: str | None, polygon: dict | None = None, 
              + f"; Median {q(0.5)}, 10 %: {q(0.1)}, 90 %: {q(0.9)} {unit}."]
     if metric.startswith("cooling") or metric == "electricity_demand_cooling":
         notes.append(cooling.note(sc) if metric != "cooling_actual" else cooling.ACTUAL_NOTE)
+    if metric in ("pet_14h", "t_air_04h"):
+        notes.append("Wärmebelastung: Klimamodell Berlin 2022 (Umweltatlas) für eine austauscharme sommerliche Strahlungswetterlage, Ist-Zustand; PET = gefühlte Temperatur um 14 Uhr, Lufttemperatur um 4 Uhr = nächtliche Überwärmung, je Block(teil)fläche.")
     if metric.startswith("u_"):
         notes.append("U-Werte: typische Werte nach Gebäudetyp und Baualter aus der NaiS-DB (Wohnen TABULA-Typgebäude im Ist-Zustand, Nichtwohnen IWU-NWG-Mittelwerte mit Standardfehler); der tatsächliche Sanierungsstand je Gebäude ist nicht bekannt.")
     fr = frame("features", [field("rank", "ordinal", "Rang"), field("bldg_uuid", "id", "Gebäude-ID"),
@@ -1028,6 +1089,118 @@ def _search_area(db: Session, params: dict, bbox, polygon, districts, scope, add
         except ValueError:
             pass
     return None, []
+
+
+KIND = {"settlement": "siedlung", "streets": "verkehr", "green": "gruen"}
+KIND_LABEL = {"siedlung": "Siedlungsfläche", "verkehr": "Verkehrsfläche", "gruen": "Grün-/Freifläche"}
+
+
+def heat_stress_map(db: Session, bbox: str | None, polygon: dict | None = None, *, time: str = "day",
+                    areas: list[str] | None = None, vulnerable_only: bool | None = None, top_n: int | None = None,
+                    districts: list[str] | None = None, scope: str | None = None, address: str | None = None,
+                    place: str | None = None, **_) -> dict:
+    col = "t2m04h" if time == "night" else "pet14h"
+    kinds = [KIND[k] for k in (areas or ["settlement"]) if k in KIND] or ["siedlung"]
+    params: dict = {"kinds": kinds}
+    area, notes = _search_area(db, params, bbox, polygon, districts, scope, address, place)
+    where = [f"c.kind = ANY(:kinds)", f"c.{col} IS NOT NULL"]
+    if area:
+        where.append(f"ST_Intersects(c.geom, ({area}))")
+    if vulnerable_only:
+        where.append("EXISTS (SELECT 1 FROM core_base.climate_vulnerable v WHERE ST_Intersects(v.geom, ST_PointOnSurface(c.geom)))")
+    rows = db.execute(text(f"""
+        SELECT c.kind, c.schl5, c.{col} AS v, c.rating, ST_Area(c.geom) AS a,
+               ST_AsGeoJSON(ST_Transform(ST_SimplifyPreserveTopology(c.geom, 2), 4326), 6) AS g,
+               ST_X(ST_Transform(ST_PointOnSurface(c.geom), 4326)) AS lon, ST_Y(ST_Transform(ST_PointOnSurface(c.geom), 4326)) AS lat
+        FROM core_base.climate_area c WHERE {' AND '.join(where)}
+        ORDER BY c.{col} DESC LIMIT 6000"""), params).all()
+    unit, label = "°C", ("Lufttemperatur nachts (4 Uhr)" if col == "t2m04h" else "Wärmebelastung am Tag (PET 14 Uhr)")
+    features = [{"type": "Feature", "geometry": json.loads(r.g), "properties": {"value": round(float(r.v), 1)}} for r in rows]
+    top = max(1, min(int(top_n or 20), 200))
+    out = [{"rank": k + 1, "area_type": KIND_LABEL[r.kind], "block": r.schl5, "value": round(float(r.v), 1),
+            "rating": r.rating, "area_m2": round(float(r.a)), "lon": round(r.lon, 5), "lat": round(r.lat, 5)}
+           for k, r in enumerate(rows[:top])]
+    # statistics over all matching areas (the map shows at most 6000)
+    st = db.execute(text(f"""
+        SELECT count(*) AS n, SUM(ST_Area(c.geom)) AS a, SUM(c.{col} * ST_Area(c.geom)) / NULLIF(SUM(ST_Area(c.geom)), 0) AS mean,
+               SUM(ST_Area(c.geom)) FILTER (WHERE c.{col} > :t1) AS a1, SUM(ST_Area(c.geom)) FILTER (WHERE c.{col} > :t2) AS a2,
+               max(c.{col}) AS vmax
+        FROM core_base.climate_area c WHERE {' AND '.join(where)}"""),
+                    {**params, "t1": 35 if col == "pet14h" else 19, "t2": 41 if col == "pet14h" else 20}).one()
+    if st.n:
+        p1, p2 = 100 * float(st.a1 or 0) / float(st.a), 100 * float(st.a2 or 0) / float(st.a)
+        if col == "pet14h":
+            notes.append(f"{st.n} Flächen, flächengewichtetes Mittel {float(st.mean):.1f} °C PET (höchster Wert "
+                         f"{float(st.vmax):.1f} °C); starke Wärmebelastung (> 35 °C) auf {p1:.0f} % der Fläche, extreme "
+                         f"(> 41 °C) auf {p2:.0f} %.")
+        else:
+            notes.append(f"{st.n} Flächen, flächengewichtetes Mittel {float(st.mean):.1f} °C um 4 Uhr (höchster Wert "
+                         f"{float(st.vmax):.1f} °C); über 19 °C auf {p1:.0f} % der Fläche, über 20 °C auf {p2:.0f} %.")
+        if st.n > len(rows):
+            notes.append(f"Auf der Karte die {len(rows)} wärmsten Flächen.")
+    notes.append("Wärmebelastung: Klimamodell Berlin 2022 (Umweltatlas) für eine austauscharme sommerliche Strahlungswetterlage, Ist-Zustand; PET = gefühlte Temperatur um 14 Uhr, Lufttemperatur um 4 Uhr = nächtliche Überwärmung, je Block(teil)fläche. Zukunftsszenarien der Wärmebelastung gibt es noch nicht.")
+    fr = frame("features", [field("rank", "ordinal", "Rang"), field("area_type", "nominal", "Fläche"),
+                            field("block", "nominal", "Block(teil)fläche"), field("value", "quantitative", label, unit),
+                            field("rating", "nominal", "Bewertung"), field("area_m2", "quantitative", "Größe", "m²"),
+                            field("lon", "ordinal", "Länge"), field("lat", "ordinal", "Breite")],
+               out, ["climate_model"], total=len(rows),
+               query={"time": time, "areas": areas, "vulnerable_only": vulnerable_only, "districts": districts,
+                      "scope": scope, "address": address, "place": place}, notes=notes)
+    fr["geo"] = True
+    return {"layer": "cells_warm", "geojson": {"type": "FeatureCollection", "features": features, "legend_unit": unit},
+            "frame": fr, "summary_for_llm": {"areas": len(rows), "unit": unit, "metric": label, "hottest": out[:5],
+                                             "notes": notes}}
+
+
+def cool_places(db: Session, bbox: str | None, polygon: dict | None = None, *, max_distance_m: float | None = None,
+                min_area_m2: float | None = None, top_n: int | None = None, address: str | None = None,
+                place: str | None = None, **_) -> dict:
+    params: dict = {"dist": float(max_distance_m or 2000), "min_a": float(min_area_m2 or 2000),
+                    "top": max(1, min(int(top_n or 5), 50))}
+    notes: list[str] = []
+    if address or place:
+        ref, notes = _search_area(db, params, None, None, None, None, address, place)
+        ref = f"ST_PointOnSurface({ref})"
+    elif polygon:
+        ref = f"ST_PointOnSurface({_build_search_geom_expr(polygon, None, params)})"
+    elif bbox:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox.split(","))
+        params.update({"lon": (min_lon + max_lon) / 2, "lat": (min_lat + max_lat) / 2})
+        ref = "ST_Transform(ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), 25833)"
+        notes.append("Ausgangspunkt: Mitte des Kartenausschnitts.")
+    else:
+        return {"error": "Ohne Adresse, Ort oder Kartenausschnitt fehlt der Ausgangspunkt"}
+    rows = db.execute(text(f"""
+        WITH r AS (SELECT {ref} AS p)
+        SELECT c.schl5, c.pet14h, c.t2m04h, c.rating, ST_Area(c.geom) AS a, ST_Distance(c.geom, r.p) AS d,
+               ST_AsGeoJSON(ST_Transform(ST_SimplifyPreserveTopology(c.geom, 2), 4326), 6) AS g,
+               ST_X(ST_Transform(ST_PointOnSurface(c.geom), 4326)) AS lon, ST_Y(ST_Transform(ST_PointOnSurface(c.geom), 4326)) AS lat
+        FROM core_base.climate_area c, r
+        WHERE c.kind = 'gruen' AND c.pet14h IS NOT NULL AND ST_DWithin(c.geom, r.p, :dist) AND ST_Area(c.geom) >= :min_a
+        ORDER BY c.pet14h, ST_Distance(c.geom, r.p) LIMIT :top"""), params).all()
+    out, features = [], []
+    for k, r in enumerate(rows):
+        out.append({"rank": k + 1, "block": r.schl5, "pet_14h": round(float(r.pet14h), 1),
+                    "t_air_04h": round(float(r.t2m04h), 1) if r.t2m04h is not None else None, "rating": r.rating,
+                    "area_m2": round(float(r.a)), "distance_m": round(float(r.d)), "lon": round(r.lon, 5),
+                    "lat": round(r.lat, 5)})
+        features.append({"type": "Feature", "geometry": json.loads(r.g), "properties": {"value": round(float(r.pet14h), 1)}})
+    notes.append(f"Kühlste Grün- und Freiflächen ab {params['min_a']:.0f} m² im Umkreis von {params['dist']:.0f} m, "
+                 "nach gefühlter Temperatur (PET) um 14 Uhr. Gewässer und Wasserflächen sind nicht enthalten; die "
+                 "Erreichbarkeit (Zugang, Öffnungszeiten) ist nicht geprüft.")
+    notes.append("Wärmebelastung: Klimamodell Berlin 2022 (Umweltatlas) für eine austauscharme sommerliche Strahlungswetterlage, Ist-Zustand; PET = gefühlte Temperatur um 14 Uhr, Lufttemperatur um 4 Uhr = nächtliche Überwärmung, je Block(teil)fläche.")
+    fr = frame("features", [field("rank", "ordinal", "Rang"), field("block", "nominal", "Block(teil)fläche"),
+                            field("pet_14h", "quantitative", "Wärmebelastung am Tag (PET 14 Uhr)", "°C"),
+                            field("t_air_04h", "quantitative", "Lufttemperatur nachts (4 Uhr)", "°C"),
+                            field("rating", "nominal", "Aufenthaltsqualität am Tag"),
+                            field("area_m2", "quantitative", "Größe", "m²"), field("distance_m", "quantitative", "Entfernung", "m"),
+                            field("lon", "ordinal", "Länge"), field("lat", "ordinal", "Breite")],
+               out, ["climate_model"], total=len(out),
+               query={"max_distance_m": params["dist"], "min_area_m2": params["min_a"], "address": address,
+                      "place": place}, notes=notes)
+    fr["geo"] = True
+    return {"layer": "cells", "geojson": {"type": "FeatureCollection", "features": features, "legend_unit": "°C"},
+            "frame": fr, "summary_for_llm": {"places": out, "notes": notes}}
 
 
 def existing_networks(db: Session, bbox: str | None, polygon: dict | None = None, *, kind: str = "all",
@@ -1530,6 +1703,10 @@ def _execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon
         return cooling_scenarios(db, bbox, polygon, **tool_input)
     if name == "existing_networks":
         return existing_networks(db, bbox, polygon, **tool_input)
+    if name == "heat_stress_map":
+        return heat_stress_map(db, bbox, polygon, **tool_input)
+    if name == "cool_places":
+        return cool_places(db, bbox, polygon, **tool_input)
     if name == "block_electricity":
         return block_electricity(db, bbox, polygon, **tool_input)
     if name == "cooling_surplus":
