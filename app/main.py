@@ -691,13 +691,11 @@ def list_buildings_3d(
     }
 
 
-# About a fifth of the trees in Baumbestand have no crown diameter. Drawn with the minimum radius they were
-# invisible dots; instead the crown is estimated from the tree height (linear fit over the street trees that
-# have both, r = 0.75: crown ≈ 0.53 × height + 0.5 m), 5 m if the height is missing too. Flagged in the
-# response as krone_geschaetzt.
-CROWN_DIAMETER_SQL = "COALESCE(NULLIF(kronedurch, 0), 0.53 * NULLIF(baumhoehe, 0) + 0.5, 5)"
-# height where the register has none: inverted crown estimate above, else a typical street tree
-TREE_HEIGHT_SQL = "COALESCE(NULLIF(baumhoehe, 0), GREATEST((NULLIF(kronedurch, 0) - 0.5) / 0.53, 3), 10)"
+# Many trees in Baumbestand lack crown diameter and/or height (whole districts for the park trees, e.g.
+# Steglitz-Zehlendorf, Neukölln). Fixed substitutes (set by the user, until treetool measures them): crown
+# diameter 10 m, height 19 m. Flagged in the response as krone_geschaetzt / hoehe_geschaetzt.
+CROWN_DIAMETER_SQL = "COALESCE(NULLIF(kronedurch, 0), 10)"
+TREE_HEIGHT_SQL = "COALESCE(NULLIF(baumhoehe, 0), 19)"
 
 
 @app.get("/api/trees")
