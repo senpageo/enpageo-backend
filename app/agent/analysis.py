@@ -462,6 +462,11 @@ INDOOR_OVERHEATING_SCHEMA = {
     "properties": {
         "threshold_c": {"type": "integer", "description": "Indoor temperature limit in °C, 26-32, default 30"},
         "min_days": {"type": "integer", "description": "More days above the limit than this = cooling unavoidable, default 10"},
+        "other_measures_exhausted": {"type": "boolean",
+                                     "description": "true when the question says the other (passive) measures are "
+                                                    "exhausted / already done ('wenn die anderen Maßnahmen ausgereizt "
+                                                    "sind', 'trotz aller Maßnahmen'): all passive measures are applied "
+                                                    "(shading, user and night ventilation, new windows)"},
         "compare_measures": {"type": "boolean",
                              "description": "true for one building or site: table of measure combinations and whether "
                                             "the building stays below the limit without cooling ('natürliche "
@@ -643,7 +648,7 @@ TOOLS = [
             "and hours above 26 °C per building, for a year, climate scenario and measures; buildings above a number "
             "of days (default 10) need cooling. Use for 'wo wird eine Klimaanlage unvermeidlich', 'Innenraumtemperatur "
             "> 30 °C an mehr als 10 Tagen', 'reicht natürliche Klimatisierung' (compare_measures for one building), "
-            "'welche Gebäude überhitzen'. 'Other measures exhausted' = all measures except sanierung. Placeholder "
+            "'welche Gebäude überhitzen'. 'Other measures exhausted' = other_measures_exhausted true. Placeholder "
             "estimate, not a simulation: always say so."
         ),
         "input_schema": INDOOR_OVERHEATING_SCHEMA,
@@ -1916,6 +1921,7 @@ def _indoor_delta(db: Session, sc: dict) -> float:
 
 def indoor_overheating(db: Session, bbox: str | None, polygon: dict | None = None, *, threshold_c: int | None = None,
                        min_days: int | None = None, compare_measures: bool | None = None,
+                       other_measures_exhausted: bool | None = None,
                        climate: str | None = None, year: int | None = None, measures: list[str] | None = None,
                        top_n: int | None = None, districts: list[str] | None = None, scope: str | None = None,
                        postcodes: list[str] | None = None, usage_zone_type: str | None = None,
@@ -1924,6 +1930,8 @@ def indoor_overheating(db: Session, bbox: str | None, polygon: dict | None = Non
                        **extra) -> dict:
     th = max(26, min(int(threshold_c or 30), 32))
     nd = max(0, int(min_days if min_days is not None else 10))
+    if other_measures_exhausted:
+        measures = sorted(set(measures or []) | set(PASSIVE))
     sc = cooling.scenario(climate, year, measures, None)
     params: dict = {"th": th, "nd": nd, "top": max(1, min(int(top_n or 20), 500))}
     join, where_area = _area_sql(params, bbox, polygon, districts, scope, False, postcodes)

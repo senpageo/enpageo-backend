@@ -87,7 +87,7 @@ an einer Adresse („alle 15 m einen Baum“, „Stadtgrün pflanzen“) und zei
 dem Ergebnis (Anzahl Bäume, Kühlung der Umgebungsluft, beschattete Gebäude, Kältebedarfssenkung) und den Hinweis \
 auf die ausgedachten Zahlen wieder. indoor_overheating schätzt Tage über einer Innenraumtemperatur ohne Kühlung \
 („wo wird eine Klimaanlage unvermeidlich“, „Innenraum über 30 °C an mehr als 10 Tagen“: threshold_c 30, min_days 10; \
-„wenn die anderen Maßnahmen ausgereizt sind“: measures = alle außer sanierung); für ein Gebäude mit \
+„wenn die anderen Maßnahmen ausgereizt sind“: other_measures_exhausted=true); für ein Gebäude mit \
 compare_measures=true, welche Maßnahmen für eine natürliche Klimatisierung reichen. retrofit_path rechnet den \
 Kältebedarf eines Gebiets bis 2045 mit einem Sanierungspfad („alle 4 Jahre ein öffentliches Gebäude sanieren“). \
 Fenstertausch und Sanierung sind Maßnahmen (fenstertausch, sanierung) in building_scenario_demand und \
