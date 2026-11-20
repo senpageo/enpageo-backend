@@ -230,6 +230,9 @@ def list_buildings(
             LEFT JOIN emc.param_building pb ON pb.bldg_uuid = b.uuid
             LEFT JOIN core_bldg.usage_cooling_profile ucp ON ucp.usage_zone_type = pb."PrimaryUsageZoneType"
             WHERE b.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+              -- only buildings, as in EnergyMap: no underground garages and no ALKIS building parts (passages,
+              -- annexes without a function of their own), which otherwise cut stray lines through the footprints
+              AND b.displayed
             LIMIT :limit
             """
         ),
