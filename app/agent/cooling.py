@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 CLIMATES = {"gering": "geringer Klimawandel", "mittel": "mittlerer Klimawandel", "stark": "starker Klimawandel"}
-MEASURES = ["verschattung_aussen", "lueftung_nutzer", "nachtlueftung_auto"]
+MEASURES = ["verschattung_aussen", "lueftung_nutzer", "nachtlueftung_auto", "fenstertausch", "sanierung"]
 SETPOINTS = (22, 24, 26)
 STANDARD = {"climate": "mittel", "year": 2030, "measures": ["verschattung_aussen"], "setpoint": None}
 
@@ -27,7 +27,9 @@ SCENARIO_PROPS = {
              "description": "Year 2025-2050. Omit unless the question names one (standard: 2030)."},
     "measures": {"type": "array", "items": {"type": "string", "enum": MEASURES},
                  "description": "Measures in place: verschattung_aussen (external window shading), lueftung_nutzer "
-                                "(ventilation by users), nachtlueftung_auto (automatic night ventilation). Omit unless "
+                                "(ventilation by users), nachtlueftung_auto (automatic night ventilation), fenstertausch "
+                                "(new windows with solar control glazing), sanierung (energy retrofit of the envelope: "
+                                "insulation, windows; can raise cooling demand). Omit unless "
                                 "the question names measures (standard: verschattung_aussen). [] = no measures."},
     "setpoint": {"type": "number", "enum": list(SETPOINTS),
                  "description": "Cooling setpoint in °C. Omit unless named (standard: per building function)."},
@@ -119,7 +121,8 @@ def bind(db: Session, params: dict, sc: dict) -> dict:
 
 
 MEASURE_LABEL = {"verschattung_aussen": "außenliegende Fensterverschattung", "lueftung_nutzer": "Lüftung durch Nutzer",
-                 "nachtlueftung_auto": "automatische Nachtlüftung"}
+                 "nachtlueftung_auto": "automatische Nachtlüftung", "fenstertausch": "Fenstertausch",
+                 "sanierung": "Sanierung der Hülle"}
 
 
 def label(sc: dict) -> str:

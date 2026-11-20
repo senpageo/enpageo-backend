@@ -400,7 +400,8 @@ BUILDING_SCENARIO_SCHEMA = {
         "compare_measures": {"type": "array", "items": {"type": "string", "enum": cooling.MEASURES},
                              "description": "Measures whose effect is asked ('wie viel weniger, wenn ...'): "
                                             "verschattung_aussen (external window shading), lueftung_nutzer (ventilation "
-                                            "by users), nachtlueftung_auto (automatic night ventilation)."},
+                                            "by users), nachtlueftung_auto (automatic night ventilation), fenstertausch "
+                                            "(new windows, solar control glass), sanierung (envelope retrofit)."},
         **{k: v for k, v in cooling.SCENARIO_PROPS.items() if k != "measures"},
         "top_n": {"type": "integer", "description": "Number of buildings with the highest cooling demand, default 10, max 500"},
         **SELECTION_PROPS,
@@ -442,6 +443,56 @@ LINE_DENSITY_SCHEMA = {
         "scope": _FILTER_PROPS["scope"],
     },
     "required": ["carrier"],
+}
+
+STREET_TREES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "street": {"type": "string", "description": "Street name when no section is drawn on the map (e.g. 'Sonnenallee')"},
+        "spacing_m": {"type": "number", "description": "Distance between new trees in m, default 15 ('alle 15 m einen Baum')"},
+        **{k: v for k, v in cooling.SCENARIO_PROPS.items() if k != "measures"},
+        "districts": _FILTER_PROPS["districts"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
+INDOOR_OVERHEATING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "threshold_c": {"type": "integer", "description": "Indoor temperature limit in °C, 26-32, default 30"},
+        "min_days": {"type": "integer", "description": "More days above the limit than this = cooling unavoidable, default 10"},
+        "compare_measures": {"type": "boolean",
+                             "description": "true for one building or site: table of measure combinations and whether "
+                                            "the building stays below the limit without cooling ('natürliche "
+                                            "Klimatisierung ausreichend', 'welche Maßnahmen reichen')"},
+        **cooling.SCENARIO_PROPS,
+        "top_n": {"type": "integer", "description": "Buildings listed, default 20"},
+        **_FILTER_PROPS,
+        **SELECTION_PROPS,
+    },
+    "required": [],
+}
+
+RETROFIT_PATH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "interval_years": {"type": "integer", "description": "One retrofit step every n years, default 4"},
+        "per_step": {"type": "integer", "description": "Buildings retrofitted per step, default 1"},
+        "start_year": {"type": "integer", "description": "First retrofit, default 2026"},
+        "end_year": {"type": "integer", "description": "End of the path, default 2045"},
+        "order": {"type": "string", "enum": ["highest_demand", "oldest"],
+                  "description": "Which buildings first: highest cooling demand (default) or oldest"},
+        "owner": {**EXTRA_FILTER_PROPS["owner"],
+                  "description": "Which buildings are retrofitted; default land_berlin ('öffentliches Gebäude')"},
+        **cooling.SCENARIO_PROPS,
+        "usage_zone_type": _FILTER_PROPS["usage_zone_type"],
+        "building_function": _FILTER_PROPS["building_function"],
+        "districts": _FILTER_PROPS["districts"],
+        "scope": _FILTER_PROPS["scope"],
+        **SELECTION_PROPS,
+    },
+    "required": [],
 }
 
 TOOLS = [
@@ -575,10 +626,45 @@ TOOLS = [
         "input_schema": AGGREGATE_CHILLERS_SCHEMA,
     },
     {
+        "name": "street_trees_scenario",
+        "description": (
+            "Scenario: plant new street trees along a street section (drawn on the map as a line, or a street name or "
+            "address) every n metres; shows the new trees on the map (purple, not saved) and the buildings whose "
+            "facades they shade, with the number of trees, the cooling of the ambient air and the lower cooling "
+            "demand. Use for 'wenn man an der Straße alle 15 m einen Baum pflanzt', 'Stadtgrün / Straßenbäume "
+            "pflanzen'. The effects are made-up placeholders: always say so."
+        ),
+        "input_schema": STREET_TREES_SCHEMA,
+    },
+    {
+        "name": "indoor_overheating",
+        "description": (
+            "Estimated indoor overheating without cooling: days per year above an indoor temperature (default 30 °C) "
+            "and hours above 26 °C per building, for a year, climate scenario and measures; buildings above a number "
+            "of days (default 10) need cooling. Use for 'wo wird eine Klimaanlage unvermeidlich', 'Innenraumtemperatur "
+            "> 30 °C an mehr als 10 Tagen', 'reicht natürliche Klimatisierung' (compare_measures for one building), "
+            "'welche Gebäude überhitzen'. 'Other measures exhausted' = all measures except sanierung. Placeholder "
+            "estimate, not a simulation: always say so."
+        ),
+        "input_schema": INDOOR_OVERHEATING_SCHEMA,
+    },
+    {
+        "name": "retrofit_path",
+        "description": (
+            "Cooling demand of an area year by year until 2045 with and without a retrofit path: every n years n "
+            "buildings (default: one state-owned building every 4 years, highest cooling demand first) get an "
+            "envelope retrofit; line chart plus the list of buildings and years. Use for 'wie ändert sich der "
+            "Kältebedarf bis 2045, wenn ich alle 4 Jahre ein öffentliches Gebäude saniere'. Flat retrofit effect "
+            "(placeholder): always say so."
+        ),
+        "input_schema": RETROFIT_PATH_SCHEMA,
+    },
+    {
         "name": "report_missing_data",
         "description": (
             "Call this when answering needs data the map does not have yet: simulated (not assumed) climate "
-            "scenarios or measure effects, indoor temperatures or overheating, outdoor heat stress, electricity demand, PV, "
+            "scenarios or measure effects, green roofs or facades, simulated indoor temperatures, future outdoor heat "
+            "stress, electricity demand, PV, "
             "cooling networks, chiller capacity, cities other than Berlin, ownership (municipal buildings), U-values or "
             "retrofit state, data centres. It returns what is missing and who supplies it. Never estimate these yourself."
         ),
@@ -590,8 +676,8 @@ MISSING = {
     "climate_scenarios": ("Simulierte Klimaszenarien und Zukunftsjahre",
                           "kommen aus der Simulation im Projekt; Annahmen (Mockup) je Gebäude gibt es schon (building_scenario_demand)"),
     "measures": ("Simulierte Wirkungen von Maßnahmen und Sanierungen auf den Kältebedarf",
-                 "kommen aus der Simulation im Projekt; Annahmen (Mockup) für Verschattung und Lüftung gibt es schon (building_scenario_demand)"),
-    "indoor_temperature": ("Innenraumtemperaturen und Überhitzungsstunden", "kommen aus der Simulation im Projekt"),
+                 "kommen aus der Simulation im Projekt; Annahmen (Mockup) für Verschattung, Lüftung, Fenstertausch und Sanierung gibt es schon (building_scenario_demand, cooling_scenarios), Straßenbäume als Platzhalter (street_trees_scenario); Dach- und Fassadenbegrünung fehlen noch"),
+    "indoor_temperature": ("Simulierte Innenraumtemperaturen und Überhitzungsstunden", "kommen aus der Simulation im Projekt; eine Platzhalter-Schätzung gibt es (indoor_overheating)"),
     "outdoor_heat": ("Wärmebelastung im Außenraum für künftige Jahre und Klimaszenarien",
                      "sind noch nicht im Datenbestand; den Ist-Zustand (Klimamodell 2022) gibt es (heat_stress_map, cool_places)"),
     "electricity": ("Strom nach Verbrauchern (Haushalt, Gewerbe) und Lastgänge",
@@ -990,9 +1076,13 @@ def cooling_scenarios(db: Session, bbox: str | None, polygon: dict | None = None
             key = field("scenario", "ordinal", "Sollwert")
         else:  # measures
             from itertools import combinations
-            ms = cooling.MEASURES
-            combos = [()] + [c for k in (1, 2, 3) for c in combinations(ms, k)]
-            scs = [((" + ".join(cooling.MEASURE_LABEL[m] for m in c) or "ohne Maßnahmen"), {**base, "measures": list(c)})
+            # the measures named in the question, else all: each alone, pairs (up to three measures) and all together
+            ms = [m for m in (measures or []) if m in cooling.MEASURES] or cooling.MEASURES
+            combos = [()] + [(m,) for m in ms] + (list(combinations(ms, 2)) if len(ms) <= 3 else [])
+            if len(ms) >= 3:
+                combos.append(tuple(ms))
+            scs = [(("alle Maßnahmen" if len(c) == len(cooling.MEASURES) else
+                     " + ".join(cooling.MEASURE_LABEL[m] for m in c) or "ohne Maßnahmen"), {**base, "measures": list(c)})
                    for c in combos]
             key = field("scenario", "nominal", "Maßnahmen")
         rows = []
@@ -1677,6 +1767,322 @@ def aggregate_chillers(db: Session, bbox: str | None, polygon: dict | None = Non
     return frame("aggregate", [metric], [{"chiller_count": v}], ["chillers"], total=1, query=query, notes=notes)
 
 
+# ------------------------------------------------------------------------------------------------------------
+# Placeholder tools (2026-11-20): street trees, indoor overheating, retrofit path. The numbers are assumptions
+# or made up until the project's simulations (SimStadt) arrive; the tools give the structure for those answers.
+# ------------------------------------------------------------------------------------------------------------
+
+TREE_PLACEHOLDER = {
+    "air_cooling_k": 3.0,           # cooling of the ambient air (made up, to be replaced)
+    "shade_pct": (-15, -8, -3),     # cooling demand of a shaded building, min/std/max % (made up)
+    "shade_distance_m": 12,         # a building counts as shaded with a new tree this close (crown radius + gap)
+    "crown_m": 8, "height_m": 12,   # drawn size of a new tree (grown for about 20 years)
+}
+PLACEHOLDER_NOTE = "Hinweis: Dies sind ausgedachte Zahlen; sie werden bald durch Simulationsergebnisse ersetzt."
+OWNER_LABEL = {"land_berlin": "landeseigene Grundstücke", "bezirk": "Bezirksverwaltung",
+               "hauptverwaltung": "Hauptverwaltung", "sondervermoegen": "Sondervermögen/Liegenschaftsfonds",
+               "nicht_landeseigen": "nicht landeseigen"}
+
+
+def _address_text(r) -> str | None:
+    return r.namlag if r.namlag and r.hnr and r.namlag.endswith(r.hnr) else \
+        " ".join(x for x in (r.namlag, r.hnr) if x) or None
+
+
+def street_trees_scenario(db: Session, bbox: str | None, polygon: dict | None = None, *, street: str | None = None,
+                          spacing_m: float | None = None, districts: list[str] | None = None,
+                          address: str | None = None, place: str | None = None, climate: str | None = None,
+                          year: int | None = None, setpoint: float | None = None, **_) -> dict:
+    sp = max(5.0, min(float(spacing_m or 15), 50.0))
+    params: dict = {"sp": sp, "off": 7.0, "gap": 5.0, "eps": sp * 0.4, "shade": TREE_PLACEHOLDER["shade_distance_m"]}
+    where = ["coalesce(s.class2, '') NOT IN ('AUTO', 'BAB')", "coalesce(s.class, '') <> 'A'"]
+    clip = "s.geom"
+    notes: list[str] = []
+    if polygon:
+        # a drawn line or point: the street sections within 20 m of it; a drawn polygon: the sections inside
+        params["polygon_geojson"] = json.dumps(polygon)
+        g = "ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(:polygon_geojson), 4326), 25833)"
+        area = g if polygon.get("type") == "Polygon" else f"ST_Buffer({g}, 20)"
+        where.append(f"ST_Intersects(s.geom, {area})")
+        clip = f"ST_Intersection(s.geom, {area})"
+        what = "markierter Abschnitt"
+    elif street:
+        params["street"] = f"%{street.strip()}%"
+        where.append("s.street_name ILIKE :street")
+        if districts:
+            params["dist0"] = f"%{districts[0]}%"
+            where.append("s.district ILIKE :dist0")
+        what = street
+    elif address or place:
+        area, notes = _search_area(db, params, None, None, None, None, address, place)
+        area = f"ST_Buffer(({area}), 40)"
+        where.append(f"ST_Intersects(s.geom, {area})")
+        clip = f"ST_Intersection(s.geom, {area})"
+        what = address or place
+    else:
+        return {"error": "Kein Straßenabschnitt: bitte in der Karte eine Linie entlang der Straße zeichnen oder eine "
+                         "Straße (mit Bezirk) bzw. Adresse nennen."}
+    cond = " AND ".join(where)
+    rows = db.execute(text(f"""
+        WITH seg AS (
+            SELECT s.id, s.street_name,
+                   (ST_Dump(ST_LineMerge(ST_CollectionExtract(ST_Multi({clip}), 2)))).geom AS g
+            FROM core_base.street_segment s WHERE {cond}),
+        side AS (
+            SELECT id, street_name, (ST_Dump(ST_OffsetCurve(g, o))).geom AS g
+            FROM seg, (VALUES (CAST(:off AS float8)), (-CAST(:off AS float8))) v(o) WHERE ST_Length(g) > 2),
+        pts AS (
+            SELECT id, street_name, ST_LineInterpolatePoint(g, 0.5) AS p FROM side
+             WHERE ST_Length(g) BETWEEN :sp * 0.5 AND :sp
+            UNION ALL
+            SELECT id, street_name, (ST_Dump(ST_LineInterpolatePoints(g, :sp / ST_Length(g), true))).geom
+              FROM side WHERE ST_Length(g) > :sp),
+        free AS (
+            SELECT p.* FROM pts p
+            WHERE NOT EXISTS (SELECT 1 FROM core_veg.strassenbaeume t WHERE ST_DWithin(t.geom, p.p, :gap))
+              AND NOT EXISTS (SELECT 1 FROM core_veg.anlagenbaeume t WHERE ST_DWithin(t.geom, p.p, :gap))
+              AND NOT EXISTS (SELECT 1 FROM emc.building b WHERE b.displayed AND ST_DWithin(b.geom, p.p, 2))),
+        cl AS (SELECT *, ST_ClusterDBSCAN(p, :eps, 1) OVER () AS c FROM free)
+        SELECT DISTINCT ON (c) street_name, ST_X(p) AS x, ST_Y(p) AS y,
+               ST_X(ST_Transform(p, 4326)) AS lon, ST_Y(ST_Transform(p, 4326)) AS lat
+        FROM cl ORDER BY c, id LIMIT 5000"""), params).all()
+    if not rows:
+        return {"error": f"Für '{what}' wurden keine Straßenabschnitte mit freiem Platz für neue Bäume gefunden."}
+    n_existing = db.execute(text(f"""
+        SELECT (SELECT count(*) FROM core_veg.strassenbaeume t WHERE ST_DWithin(t.geom, a.g, 15))
+             + (SELECT count(*) FROM core_veg.anlagenbaeume t WHERE ST_DWithin(t.geom, a.g, 15)) AS n
+        FROM (SELECT ST_Union({clip}) AS g FROM core_base.street_segment s WHERE {cond}) a"""), params).scalar() or 0
+
+    sc = cooling.scenario(climate, year, None, setpoint)
+    p2 = cooling.bind(db, {"xs": [r.x for r in rows], "ys": [r.y for r in rows], "shade": params["shade"]}, sc)
+    shaded = db.execute(text(f"""
+        WITH t AS (SELECT ST_SetSRID(ST_MakePoint(x, y), 25833) AS p
+                   FROM unnest(CAST(:xs AS float8[]), CAST(:ys AS float8[])) u(x, y)),
+        hit AS (SELECT DISTINCT b.uuid FROM t JOIN emc.building b ON b.displayed AND ST_DWithin(b.geom, t.p, :shade))
+        SELECT b.uuid, {cooling.ANNUAL} AS v
+        FROM hit JOIN emc.building b ON b.uuid = hit.uuid {cooling.COOL_JOIN}
+        WHERE coalesce(cb.measures_apply, false)"""), p2).all()
+    lo, mid, hi = TREE_PLACEHOLDER["shade_pct"]
+    demand = sum(float(r.v or 0) for r in shaded) / 1000
+    save = {"min": round(demand * -hi / 100, 1), "std": round(demand * -mid / 100, 1), "max": round(demand * -lo / 100, 1)}
+
+    per_street: dict[str, int] = {}
+    for r in rows:
+        key = r.street_name or "ohne Namen"
+        per_street[key] = per_street.get(key, 0) + 1
+    out = [{"street": k, "new_trees": v} for k, v in sorted(per_street.items(), key=lambda kv: -kv[1])]
+    features = [{"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(r.lon, 7), round(r.lat, 7)]},
+                 "properties": {"art_dtsch": "Szenario: neuer Straßenbaum", "art_gruppe": "Laubbaum",
+                                "herkunft": "szenario", "strasse": r.street_name, "krone_m": TREE_PLACEHOLDER["crown_m"],
+                                "hoehe_m": TREE_PLACEHOLDER["height_m"], "stammumfg": 60, "szenario": True}}
+                for r in rows]
+    features += [{"type": "Feature", "geometry": None, "properties": {"bldg_uuid": r.uuid}} for r in shaded]
+    text_de = (f"Es würden {len(rows)} Bäume gepflanzt werden (alle {sp:.0f} m auf beiden Straßenseiten, wo kein Baum "
+               f"und kein Gebäude im Weg ist; {n_existing} Bäume stehen dort schon). Sie kühlen die Umgebungsluft um "
+               f"{TREE_PLACEHOLDER['air_cooling_k']:.0f} °C ab. Sie verschatten die Fassaden von {len(shaded)} Gebäuden "
+               f"und senken deren Kältebedarf um etwa {save['std']:.1f} MWh/a ({-mid} %, Spanne {-hi} bis {-lo} %)."
+               ).replace(f"{save['std']:.1f} MWh", f"{save['std']:.1f} MWh".replace(".", ","))
+    notes += [text_de, PLACEHOLDER_NOTE,
+              f"Kältebedarf der beschatteten Gebäude: {cooling.label(sc)}; {demand:.1f} MWh/a ohne die neuen Bäume.".replace(
+                  f"{demand:.1f}", f"{demand:.1f}".replace(".", ",")),
+              "Die neuen Bäume sind nur ein Szenario in der Karte (lila) und werden nicht gespeichert. Straßenbreite, "
+              "Leitungen im Boden, Zufahrten und Parkplätze sind nicht geprüft."]
+    fr = frame("aggregate", [field("street", "nominal", "Straße"), field("new_trees", "quantitative", "neue Bäume")],
+               out, ["street_tree_scenario", "street_network", "trees", "cooling_mockup"], total=len(out),
+               query={"street": street, "spacing_m": sp, "districts": districts, "address": address, "place": place,
+                      **sc}, notes=notes)
+    return {"layer": "scenario_trees", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
+            "summary_for_llm": {"new_trees": len(rows), "existing_trees_nearby": n_existing, "spacing_m": sp,
+                                "air_cooling_k": TREE_PLACEHOLDER["air_cooling_k"], "shaded_buildings": len(shaded),
+                                "cooling_demand_shaded_mwh_a": round(demand, 1), "saving_mwh_a": save,
+                                "saving_pct_std": -mid, "per_street": out[:10], "text": text_de,
+                                "placeholder_note": PLACEHOLDER_NOTE}}
+
+
+# production, storage and process cooling are not what "public building" means in a retrofit path
+NO_RETROFIT = ["produktion_gewerbe", "lager", "kuehlhaus", "rechenzentrum"]
+PASSIVE = ["verschattung_aussen", "lueftung_nutzer", "nachtlueftung_auto", "fenstertausch"]
+INDOOR_JOIN = """
+    JOIN core_bldg.indoor_base_building ib ON ib.uuid = b.uuid
+    JOIN core_bldg.indoor_lookup il ON il.ref = ib.ref AND il.threshold_c = :th
+         AND il.delta_k = round(greatest(-6, least(8, ib.base_delta_k + CAST(:d AS numeric))), 1)"""
+
+
+def _indoor_delta(db: Session, sc: dict) -> float:
+    return float(db.execute(text("SELECT core_bldg.f_indoor_climate_delta(:cl, :yr) "
+                                 "+ core_bldg.f_indoor_measure_delta(CAST(:ms AS text[]))"),
+                            {"cl": sc["climate"], "yr": sc["year"], "ms": sc["measures"]}).scalar() or 0)
+
+
+def indoor_overheating(db: Session, bbox: str | None, polygon: dict | None = None, *, threshold_c: int | None = None,
+                       min_days: int | None = None, compare_measures: bool | None = None,
+                       climate: str | None = None, year: int | None = None, measures: list[str] | None = None,
+                       top_n: int | None = None, districts: list[str] | None = None, scope: str | None = None,
+                       postcodes: list[str] | None = None, usage_zone_type: str | None = None,
+                       min_year_built: int | None = None, max_year_built: int | None = None,
+                       building_function: str | None = None, address: str | None = None, place: str | None = None,
+                       **extra) -> dict:
+    th = max(26, min(int(threshold_c or 30), 32))
+    nd = max(0, int(min_days if min_days is not None else 10))
+    sc = cooling.scenario(climate, year, measures, None)
+    params: dict = {"th": th, "nd": nd, "top": max(1, min(int(top_n or 20), 500))}
+    join, where_area = _area_sql(params, bbox, polygon, districts, scope, False, postcodes)
+    where_area += _filter_sql(params, usage_zone_type, min_year_built, max_year_built, db,
+                              building_function=building_function, address=address, place=place, **extra)
+    srcs = ["indoor_mockup", "cooling_mockup", "climate_model", "alkis_function"]
+    base_notes = [f"Überhitzung innen: Tage, an denen die Raumtemperatur (operativ) ohne Kühlung über {th} °C steigt, "
+                  f"und Stunden über 26 °C. Klima: {cooling.CLIMATES[sc['climate']]}, {sc['year']}.",
+                  "Platzhalter: Referenzläufe aus citygml2msl (Wohnen, Büro, Krankenhaus; Wetter 2023) pauschal "
+                  "verschoben um Klima, Maßnahmen, Baualter und Wärmebelastung am Standort; die SimStadt-Simulationen "
+                  "ersetzen das. Gewerbe, Lager, Schwimmbäder, Kühlhäuser und Rechenzentren sind nicht enthalten.",
+                  PLACEHOLDER_NOTE]
+
+    if compare_measures:
+        # one building (address/place) or a small selection: which measure combination keeps it below the limit
+        combos = [[]] + [[m] for m in cooling.MEASURES] + [PASSIVE, PASSIVE + ["sanierung"]]
+        rows = []
+        for ms in combos:
+            params["d"] = _indoor_delta(db, {**sc, "measures": ms})
+            r = db.execute(text(f"""
+                SELECT count(*) AS n, max(il.days_over) AS days, max(il.hours_over_26) AS h26, max(il.max_op_c) AS mx
+                {_BASE} {INDOOR_JOIN} {join} WHERE true {where_area}"""), params).one()
+            if not r.n:
+                return {"error": "Für diese Gebäude gibt es keine Schätzung der Innentemperatur (nur Wohnen, Büro, "
+                                 "Bildung, Handel, Kultur, Sport, Hotel und Krankenhaus)."}
+            if len(ms) >= len(PASSIVE):
+                name = "alle passiven Maßnahmen" + (" + Sanierung der Hülle" if "sanierung" in ms else "")
+            else:
+                name = " + ".join(cooling.MEASURE_LABEL[m] for m in ms) or "ohne Maßnahmen"
+            rows.append({"measures": name, "days_over": r.days, "hours_over_26": r.h26,
+                         "max_op_c": float(r.mx), "natural_enough": "ja" if (r.days or 0) <= nd else "nein"})
+        fr = frame("aggregate", [field("measures", "nominal", "Maßnahmen"),
+                                 field("days_over", "quantitative", f"Tage über {th} °C"),
+                                 field("hours_over_26", "quantitative", "Stunden über 26 °C", "h"),
+                                 field("max_op_c", "quantitative", "höchste Raumtemperatur", "°C"),
+                                 field("natural_enough", "nominal", f"ohne Kühlung ausreichend (höchstens {nd} Tage)")],
+                   rows, srcs, total=len(rows),
+                   query={"threshold_c": th, "min_days": nd, "compare_measures": True, "climate": sc["climate"],
+                          "year": sc["year"], "address": address, "place": place},
+                   notes=base_notes + ["Bei mehreren Gebäuden zählt das ungünstigste. Die Sanierung der Hülle "
+                                       "erhöht die Überhitzung leicht (Dämmung hält Wärme im Gebäude)."])
+        return {"frame": fr, "summary_for_llm": {"rows": rows, "threshold_c": th, "min_days": nd,
+                                                 "notes": base_notes}}
+
+    params["d"] = _indoor_delta(db, sc)
+    rows = db.execute(text(f"""
+        SELECT b.uuid, b.namlag, b.hnr, b.bezgfk, cb.age_class, il.days_over, il.hours_over_26, il.max_op_c
+        {_BASE} {INDOOR_JOIN} {join}
+        WHERE true {where_area}
+        ORDER BY il.days_over DESC, il.hours_over_26 DESC LIMIT 40000"""), params).all()
+    n = len(rows)
+    over = [r for r in rows if (r.days_over or 0) > nd]
+    out = [{"rank": k + 1, "bldg_uuid": r.uuid, "address": _address_text(r), "building_function": r.bezgfk,
+            "age_class": r.age_class, "days_over": r.days_over, "hours_over_26": r.hours_over_26,
+            "max_op_c": float(r.max_op_c)} for k, r in enumerate(rows[:params["top"]])]
+    features = [{"type": "Feature", "geometry": None, "properties": {"bldg_uuid": r.uuid, "value": r.days_over}}
+                for r in rows if r.days_over]
+    notes = base_notes + [f"Maßnahmen: {', '.join(cooling.MEASURE_LABEL[m] for m in sc['measures']) or 'keine'}. "
+                          f"{len(over)} von {n} Gebäuden liegen über {nd} Tagen: dort wäre eine Kühlung "
+                          f"(Klimaanlage) unvermeidlich."]
+    fr = frame("features", [field("rank", "ordinal", "Rang"), field("bldg_uuid", "id", "Gebäude-ID"),
+                            field("address", "nominal", "Adresse"),
+                            field("building_function", "nominal", "Gebäudefunktion (ALKIS)"),
+                            field("age_class", "ordinal", "Baualtersklasse"),
+                            field("days_over", "quantitative", f"Tage über {th} °C"),
+                            field("hours_over_26", "quantitative", "Stunden über 26 °C", "h"),
+                            field("max_op_c", "quantitative", "höchste Raumtemperatur", "°C")],
+               out, srcs, ids=[r["bldg_uuid"] for r in out], total=n,
+               query={"threshold_c": th, "min_days": nd, **sc, "districts": districts, "scope": scope,
+                      "address": address, "place": place, "usage_zone_type": usage_zone_type,
+                      "building_function": building_function, **{k: v for k, v in extra.items() if v is not None}},
+               notes=notes)
+    return {"layer": "building_values_warm",
+            "geojson": {"type": "FeatureCollection", "features": features, "legend_unit": "Tage"}, "frame": fr,
+            "summary_for_llm": {"buildings": n, "buildings_over_min_days": len(over), "threshold_c": th,
+                                "min_days": nd, "measures": sc["measures"], "top": out[:10], "notes": notes}}
+
+
+def retrofit_path(db: Session, bbox: str | None, polygon: dict | None = None, *, interval_years: int | None = None,
+                  per_step: int | None = None, start_year: int | None = None, end_year: int | None = None,
+                  order: str | None = None, owner: str | None = None, climate: str | None = None,
+                  measures: list[str] | None = None, setpoint: float | None = None,
+                  districts: list[str] | None = None, scope: str | None = None, postcodes: list[str] | None = None,
+                  usage_zone_type: str | None = None, building_function: str | None = None,
+                  address: str | None = None, place: str | None = None, **extra) -> dict:
+    iv = max(1, min(int(interval_years or 4), 20))
+    k_step = max(1, min(int(per_step or 1), 100))
+    y0 = max(2025, min(int(start_year or 2026), 2050))
+    y1 = max(y0, min(int(end_year or 2045), 2050))
+    owner = owner or "land_berlin"
+    sc = cooling.scenario(climate, 2025, measures, setpoint)
+    sc["measures"] = [m for m in sc["measures"] if m != "sanierung"]
+    params: dict = {}
+    join, where_area = _area_sql(params, bbox, polygon, districts, scope, False, postcodes)
+    area_only = where_area + _filter_sql(params, None, None, None, db, address=address, place=place)
+    cooling.bind(db, params, sc)  # year 2025; the other years scale with the climate factor
+    total25 = float(db.execute(text(f"SELECT sum({cooling.ANNUAL}) {_BASE} {join} WHERE true {area_only}"),
+                               params).scalar() or 0)
+    cand_where = where_area + _filter_sql(params, usage_zone_type, None, None, db,
+                                          building_function=building_function, address=address, place=place,
+                                          owner=owner, **extra)
+    year_sql = 'CASE WHEN pb."Year of construction" ~ \'^[0-9]+$\' THEN pb."Year of construction"::int END'
+    ordering = f"{year_sql} NULLS LAST, v DESC" if order == "oldest" else "v DESC NULLS LAST"
+    n_steps = (y1 - y0) // iv + 1
+    cands = db.execute(text(f"""
+        SELECT b.uuid, b.namlag, b.hnr, b.bezgfk, cb.age_class, {cooling.ANNUAL} AS v
+        {_BASE} {join}
+        WHERE cb.measures_apply AND {cooling.ANNUAL} > 0 AND cb.cooling_group <> ALL(:no_retrofit) {cand_where}
+        ORDER BY {ordering} LIMIT :lim"""), {**params, "lim": n_steps * k_step, "no_retrofit": NO_RETROFIT}).all()
+    sel = [(y0 + (i // k_step) * iv, r) for i, r in enumerate(cands)]
+    pct = db.execute(text("SELECT cool_pct_min, cool_pct_std, cool_pct_max FROM core_bldg.demand_measure "
+                          "WHERE measure = 'sanierung'")).one()
+    c25 = float(params["c_cool"])
+    cf = {r.y: float(r.c) for r in db.execute(text(
+        "SELECT y, core_bldg.f_climate_factor(:cl, y, 'cool') AS c FROM generate_series(2025, :y1) y"),
+        {"cl": sc["climate"], "y1": y1}).all()}
+    rows = []
+    for y in range(2025, y1 + 1):
+        scale = cf[y] / c25 if c25 else 1
+        done = [r for (yr, r) in sel if yr <= y]
+        delta = {b: sum(float(r.v) for r in done) * scale * float(getattr(pct, f"cool_pct_{b}")) / 100
+                 for b in ("min", "std", "max")}
+        base = total25 * scale / 1000
+        rows.append({"year": y, "year_label": str(y), "variant": "ohne Sanierungen", "value": round(base, 1),
+                     "value_min": None, "value_max": None, "renovated": 0})
+        rows.append({"year": y, "year_label": str(y), "variant": "mit Sanierungspfad",
+                     "value": round(base + delta["std"] / 1000, 1),
+                     "value_min": round(base + delta["min"] / 1000, 1),
+                     "value_max": round(base + delta["max"] / 1000, 1), "renovated": len(done)})
+    plan = [{"year": yr, "bldg_uuid": r.uuid, "address": _address_text(r), "building_function": r.bezgfk,
+             "age_class": r.age_class, "demand_2025_mwh_a": round(float(r.v) / 1000, 1)} for yr, r in sel]
+    last = rows[-1]
+    notes = [f"Sanierungspfad: ab {y0} alle {iv} Jahre {k_step} Gebäude ({OWNER_LABEL.get(owner, owner)}, "
+             f"{'älteste zuerst' if order == 'oldest' else 'höchster Kältebedarf zuerst'}), bis {y1} "
+             f"{len(sel)} Gebäude (ohne Produktion, Lager und Prozesskälte). Kältebedarf des ganzen Gebiets: {cooling.CLIMATES[sc['climate']]}, Maßnahmen: "
+             f"{', '.join(cooling.MEASURE_LABEL[m] for m in sc['measures']) or 'keine'}.",
+             f"Sanierung der Hülle: {pct.cool_pct_std:+.0f} % Kältebedarf (Spanne {pct.cool_pct_min:+.0f} bis "
+             f"{pct.cool_pct_max:+.0f} %), Pauschalwert; je nach Gebäude kann der Kältebedarf auch steigen.",
+             PLACEHOLDER_NOTE]
+    if not sel:
+        notes.insert(0, "Im Gebiet wurde kein passendes Gebäude für den Sanierungspfad gefunden.")
+    fr = frame("series", [field("year", "temporal", "Jahr"), field("variant", "nominal", "Variante"),
+                          field("value", "quantitative", "Kältebedarf", "MWh/a"),
+                          field("value_min", "quantitative", "min", "MWh/a"),
+                          field("value_max", "quantitative", "max", "MWh/a"),
+                          field("renovated", "quantitative", "sanierte Gebäude")],
+               rows, ["cooling_mockup", "state_property", "alkis_function"], total=len(rows),
+               query={"interval_years": iv, "per_step": k_step, "start_year": y0, "end_year": y1, "order": order,
+                      "owner": owner, **sc, "districts": districts, "scope": scope, "address": address,
+                      "place": place},
+               notes=notes)
+    features = [{"type": "Feature", "geometry": None, "properties": {"bldg_uuid": p["bldg_uuid"]}} for p in plan]
+    return {"layer": "buildings", "geojson": {"type": "FeatureCollection", "features": features}, "frame": fr,
+            "summary_for_llm": {"area_demand_2025_mwh_a": rows[0]["value"],
+                                f"without_path_{y1}_mwh_a": rows[-2]["value"], f"with_path_{y1}_mwh_a": last["value"],
+                                "with_path_range_mwh_a": [last["value_min"], last["value_max"]],
+                                "renovated_buildings": plan, "notes": notes}}
+
+
 def report_missing_data(db: Session, bbox: str | None, polygon: dict | None = None, *, topic: str,
                         place: str | None = None) -> dict:
     what, why = MISSING.get(topic, ("Diese Daten", "sind noch nicht im Datenbestand"))
@@ -1725,6 +2131,12 @@ def _execute(name: str, tool_input: dict, db: Session, bbox: str | None, polygon
         return line_density(db, bbox, polygon, **tool_input)
     if name == "aggregate_chillers":
         return aggregate_chillers(db, bbox, polygon, **tool_input)
+    if name == "street_trees_scenario":
+        return street_trees_scenario(db, bbox, polygon, **tool_input)
+    if name == "indoor_overheating":
+        return indoor_overheating(db, bbox, polygon, **tool_input)
+    if name == "retrofit_path":
+        return retrofit_path(db, bbox, polygon, **tool_input)
     if name == "report_missing_data":
         return report_missing_data(db, bbox, polygon, **tool_input)
     return None

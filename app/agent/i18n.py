@@ -9,6 +9,14 @@ import copy
 import re
 
 EXACT = {
+    "Hinweis: Dies sind ausgedachte Zahlen; sie werden bald durch Simulationsergebnisse ersetzt.":
+        "Note: these numbers are made up; they will soon be replaced by simulation results.",
+    "Die neuen Bäume sind nur ein Szenario in der Karte (lila) und werden nicht gespeichert. Straßenbreite, Leitungen im Boden, Zufahrten und Parkplätze sind nicht geprüft.":
+        "The new trees are only a scenario on the map (purple) and are not saved. Street width, underground pipes, driveways and parking are not checked.",
+    "neue Bäume": "new trees", "Straße": "Street", "Tage über 30 °C": "Days above 30 °C",
+    "Stunden über 26 °C": "Hours above 26 °C", "höchste Raumtemperatur": "Highest room temperature",
+    "Variante": "Variant", "ohne Sanierungen": "without retrofits", "mit Sanierungspfad": "with retrofit path",
+    "sanierte Gebäude": "Retrofitted buildings",
     # field labels
     "Nutzungsart": "Usage type",
     "Bezirk": "District",
@@ -306,16 +314,29 @@ def _scenario_en(s: str) -> str:
              .replace("Standard (", "standard (")
              .replace("außenliegende Fensterverschattung", "external window shading")
              .replace("Lüftung durch Nutzer", "ventilation by users")
-             .replace("automatische Nachtlüftung", "automatic night ventilation"))
+             .replace("automatische Nachtlüftung", "automatic night ventilation")
+             .replace("Fenstertausch", "window replacement").replace("Sanierung der Hülle", "envelope retrofit"))
 
 
 def _measures_en(s: str) -> str:
     return (s.replace("außenliegende Fensterverschattung", "external window shading")
              .replace("Lüftung durch Nutzer (Fensterlüftung in kühlen Stunden)", "ventilation by users (cool hours)")
-             .replace("automatische Nachtlüftung", "automatic night ventilation").replace(" bis ", " to "))
+             .replace("automatische Nachtlüftung", "automatic night ventilation")
+             .replace("Fenstertausch mit Sonnenschutzverglasung", "window replacement with solar control glazing")
+             .replace("energetische Sanierung der Hülle (Dämmung, Fenster)", "envelope retrofit (insulation, windows)")
+             .replace("Fenstertausch", "window replacement").replace("Sanierung der Hülle", "envelope retrofit")
+             .replace(" bis ", " to "))
 
 
 PATTERNS = [
+    (re.compile(r"^Es würden (\d+) Bäume gepflanzt werden \(alle (\d+) m auf beiden Straßenseiten, wo kein Baum und kein "
+                r"Gebäude im Weg ist; (\d+) Bäume stehen dort schon\)\. Sie kühlen die Umgebungsluft um (\d+) °C ab\. Sie "
+                r"verschatten die Fassaden von (\d+) Gebäuden und senken deren Kältebedarf um etwa ([\d,]+) MWh/a "
+                r"\((\d+) %, Spanne (\d+) bis (\d+) %\)\.$"),
+     lambda m: f"{m.group(1)} trees would be planted (every {m.group(2)} m on both sides of the street where no tree "
+               f"or building is in the way; {m.group(3)} trees are already there). They cool the ambient air by "
+               f"{m.group(4)} °C. They shade the facades of {m.group(5)} buildings and lower their cooling demand by "
+               f"about {m.group(6).replace(',', '.')} MWh/a ({m.group(7)} %, range {m.group(8)} to {m.group(9)} %)."),
     (re.compile(r"^Anteil an (.+) gesamt$"), lambda m: f"Share of total {tr(m.group(1)).lower()}"),
     (re.compile(r"^Rasterzellen (\d+) m × (\d+) m, gezeigt werden die dichtesten (\d+)\. Kältewerte sind generische "
                 r"Platzhalter, keine Simulation\.$"),
@@ -345,7 +366,7 @@ PATTERNS = [
      lambda m: f"{m.group(1)} buildings coloured{' (limit reached)' if m.group(2) else ''}; median {m.group(3)}, "
                f"10 %: {m.group(4)}, 90 %: {m.group(5)}"),
     (re.compile(r"^Änderung gegenüber (.+)$"), lambda m: f"Change vs. {tr(m.group(1))}"),
-    (re.compile(r"^((?:außenliegende Fensterverschattung|Lüftung durch Nutzer|automatische Nachtlüftung)(?: \+ .+)?)$"),
+    (re.compile(r"^((?:außenliegende Fensterverschattung|Lüftung durch Nutzer|automatische Nachtlüftung|Fenstertausch|Sanierung der Hülle)(?: \+ .+)?)$"),
      lambda m: _measures_en(m.group(1))),
     (re.compile(r"^(Adresse|Ort) aufgelöst als: (.+)$"),
      lambda m: f"{'Address' if m.group(1) == 'Adresse' else 'Place'} resolved as: {m.group(2)}"),

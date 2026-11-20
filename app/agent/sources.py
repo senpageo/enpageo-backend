@@ -94,6 +94,30 @@ SOURCES: dict[str, dict] = {
         "license": "Datenlizenz Deutschland Zero 2.0",
         "estimated": True,
     },
+    "street_tree_scenario": {
+        "label": "Straßenbaum-Szenario (Platzhalter)",
+        "tables": ["core_base.street_segment", "core_veg.strassenbaeume", "core_veg.anlagenbaeume"],
+        "status": "2026-11-20, Platzhalterwerte bis zur Simulation der Projektpartner",
+        "method": "neue Bäume im festen Abstand beidseitig entlang der Straßenachse (Detailnetz), ohne Lücken bei "
+                  "bestehenden Bäumen und Gebäuden; Kühlung der Umgebungsluft und Kältebedarfssenkung beschatteter "
+                  "Gebäude sind ausgedachte Platzhalterwerte",
+        "accuracy": "keine: Struktur für spätere Simulationsergebnisse; Straßenbreite, Leitungen und Zufahrten nicht geprüft",
+        "reference_area": None,
+        "license": "Datenlizenz Deutschland Zero 2.0 (Detailnetz, Baumbestand)",
+        "estimated": True,
+    },
+    "indoor_mockup": {
+        "label": "Innenraumtemperaturen (Platzhalter aus citygml2msl-Referenzläufen)",
+        "tables": ["core_bldg.indoor_lookup", "core_bldg.indoor_base_building", "core_bldg.demand_measure"],
+        "status": "2026-11-20, Platzhalter bis zu den SimStadt-Simulationen",
+        "method": "drei frei schwingende Stundenreihen ohne Kältemaschine (citygml2msl grob, Wetter DRKK 2023: Wohnen "
+                  "1875, Büro 1985, Krankenhaus 1920) pauschal verschoben um Klimaszenario, Maßnahmen, Baualter und "
+                  "Wärmebelastung am Standort",
+        "accuracy": "keine gebäudescharfe Aussage; Größenordnung und Richtung, Annahmen",
+        "reference_area": None,
+        "license": "eigene Berechnung",
+        "estimated": True,
+    },
     "heat_networks": {
         "label": "Wärmenetze: Fern- und Nahwärmeversorgung 2022 (200-m-Raster) und Nahwärmenetze je Teilblock",
         "tables": ["core_base.heat_supply_cell", "core_base.local_heat_network"],
