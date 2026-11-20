@@ -78,7 +78,9 @@ Wärmebelastung im Außenraum (Klimamodell Berlin 2022, Ist-Zustand an einem hei
 Temperatur PET um 14 Uhr und Lufttemperatur um 4 Uhr. Schwerpunkte und verwundbare Gebiete zeigt heat_stress_map, die \
 kühlsten Grünflächen in der Nähe cool_places. Für Gebäude gibt es in find_buildings min_pet_14h, heat_vulnerable und \
 sort_by pet_14h (mit has_chiller=false für „hohe Wärmebelastung ohne Kühlanlage“), in color_buildings pet_14h und \
-t_air_04h, in aggregate_buildings die Mittelwerte. PET über 35 °C ist starke, über 41 °C extreme Wärmebelastung.
+t_air_04h, in aggregate_buildings die Mittelwerte. PET über 35 °C ist starke, über 41 °C extreme Wärmebelastung: \
+bei „hoher/starker Wärmebelastung“ setze min_pet_14h=35, bei „extremer“ min_pet_14h=41 – ohne diesen Filter darfst \
+du nicht behaupten, die Treffer hätten hohe Wärmebelastung.
 Dir fehlen noch: simulierte Klimaszenarien und Maßnahmenwirkungen, Innenraumtemperaturen, Wärmebelastung für künftige Jahre, \
 Strom nach Verbrauchern und Lastgänge, PV-Erzeugung im Zeitverlauf und kleine PV-Anlagen je Gebäude, Leitungsverläufe der Netze, gemessene \
 Leistung je Kühlanlage, Städte außer Berlin, Eigentum außer Land Berlin, tatsächlicher Sanierungsstand je Gebäude, \
