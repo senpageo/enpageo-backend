@@ -1166,7 +1166,12 @@ def _execute_find_chillers(
         text(
             f"""
             SELECT objectid, class AS class_name, fans, capacity_kw, capacity_sd_kw, shape_area,
-                   ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
+                   (SELECT r.placement FROM core_bldg.chiller_3d r
+                     WHERE r.objectid = core_bldg."Chillers".objectid) AS placement,
+                   -- outline with roof heights (tools/kaelte/anlagen_3d.py): drawn as a block, like the map layer
+                   ST_AsGeoJSON(COALESCE((SELECT r.geom FROM core_bldg.chiller_3d r
+                                           WHERE r.objectid = core_bldg."Chillers".objectid),
+                                         ST_Force3D(ST_Transform(geom, 4326))), 7) AS geom
             FROM core_bldg."Chillers"
             {where_clause}
             ORDER BY capacity_kw DESC NULLS LAST, shape_area DESC NULLS LAST
@@ -1187,6 +1192,7 @@ def _execute_find_chillers(
                 "capacity_kw": row.capacity_kw,
                 "capacity_sd_kw": row.capacity_sd_kw,
                 "shape_area": row.shape_area,
+                "placement": row.placement,
             },
         }
         for row in rows
@@ -1203,7 +1209,7 @@ def _execute_find_chillers(
             field("shape_area", "quantitative", "Grundfläche", "m²"),
         ],
         [{k: (round(float(v), 1) if k in ("capacity_kw", "capacity_sd_kw", "shape_area") and v is not None else v)
-          for k, v in f["properties"].items()} for f in features],
+          for k, v in f["properties"].items() if k != "placement"} for f in features],
         ["chillers"] + (["districts"] if districts else []),
         ids=[str(f["properties"]["objectid"]) for f in features],
         total=total,

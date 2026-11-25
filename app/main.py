@@ -793,10 +793,13 @@ def list_chillers(
         text(
             """
             SELECT
-                objectid, class AS class_name, confidence, shape_area, capacity_kw, capacity_sd_kw,
-                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geom
-            FROM core_bldg."Chillers"
-            WHERE geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
+                c.objectid, c.class AS class_name, c.confidence, c.shape_area, c.capacity_kw, c.capacity_sd_kw,
+                r.placement,
+                -- outline with roof height per vertex (tools/kaelte/anlagen_3d.py), flat outline where it is missing
+                ST_AsGeoJSON(COALESCE(r.geom, ST_Force3D(ST_Transform(c.geom, 4326))), 7) AS geom
+            FROM core_bldg."Chillers" c
+            LEFT JOIN core_bldg.chiller_3d r USING (objectid)
+            WHERE c.geom && ST_Transform(ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326), 25833)
             LIMIT :limit
             """
         ),
@@ -820,6 +823,7 @@ def list_chillers(
                     "class": row.class_name,
                     "confidence": row.confidence,
                     "shape_area": row.shape_area,
+                    "placement": row.placement,
                     "capacity_kw": row.capacity_kw,
                     "capacity_sd_kw": row.capacity_sd_kw,
                 },
