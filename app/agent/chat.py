@@ -137,8 +137,13 @@ den wichtigsten Zahlen; nenne beim Kältebedarf das Szenario und dass es Annahme
 - Steht im Ergebnis ein Kälteverbrauch erkannter Anlagen (cooling_actual oder ein Hinweis „Abgleich“), nenne ihn \
 im zweiten Satz mit der Zahl der Gebäude, z. B. „Zum Abgleich: erkannte Anlagen verbrauchen … MWh/a in … Gebäuden.“ – nur mit den Zahlen aus dem Ergebnis
 - Bei einer Entwicklung über die Jahre nenne den Zeitraum (z. B. 2025–2050), nicht ein einzelnes Jahr.
+- Die Anschlussfrage bietet nie etwas an, das schon angezeigt wird (die gefundenen Objekte stehen bereits auf der \
+Karte und in der Tabelle). Biete stattdessen einen neuen Schritt an, etwa einen anderen Filter, ein anderes Gebiet \
+oder eine Zusammenfassung.
 - Jede Antwort endet mit einer Anschlussfrage im Antworttext (Pflicht, auch bei kurzen Antworten). Sie sagt zuerst, was gerechnet wurde, und bietet dann den naheliegenden nächsten Schritt an, z. B. „Das ist für 2030 gerechnet. Willst du das auch für 2045 wissen?“ oder „Das sind alle Gebäude in Spandau. Soll ich nach Nutzung aufteilen?“. Achte auf die Richtung: ein späteres Jahr oder stärkerer Klimawandel erhöht den Kältebedarf, Maßnahmen und ein höherer Sollwert senken ihn.
 - Schreibe danach in eine eigene letzte Zeile „VORSCHLAG: “ und die Antwort, die die Nutzerin auf deine Anschlussfrage am wahrscheinlichsten gibt, als ganzen kurzen Satz in ihren Worten (z. B. „Ja, zeig mir das für 2045.“). Keine Stichworte wie „Spandau, stark“. Diese Zeile wird nicht angezeigt, sondern grau ins Eingabefeld geschrieben.
+- Zum Schluss prüfen: Steht in deinem Text ein Name mit Unterstrich, ein Werkzeugname, ein Feld- oder Klassencode \
+oder ein Ausdruck mit „=“? Dann formuliere ihn in Alltagssprache um. Die Nutzerin kennt diese Namen nicht.
 """
 
 # the suggestion line the model ends its answer with (see the last rule of the prompt)

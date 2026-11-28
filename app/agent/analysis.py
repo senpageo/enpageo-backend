@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from . import cooling
 from .frames import field, frame
 from .tools import (BUILDING_FUNCTION_PROP, EXTRA_FILTER_PROPS,
-                    CHILLER_CAPACITY_NOTE, COOLING_ACTUAL_NOTE, KWW_JOINS, OWNER_EXPR, extra_conditions, extra_sources,
+                    CHILLER_CAPACITY_NOTE, CHILLER_CLASS_LABEL, COOLING_ACTUAL_NOTE, KWW_JOINS, OWNER_EXPR, extra_conditions, extra_sources,
                     PROCESS_HEAT_PROP, SELECTION_PROPS, _build_search_geom_expr, building_function_condition,
                     process_heat_condition, selection_condition, usage_condition)
 
@@ -1765,9 +1765,13 @@ def aggregate_chillers(db: Session, bbox: str | None, polygon: dict | None = Non
     notes = ["Aus Luftbildern erkannt.", CHILLER_CAPACITY_NOTE]
     if key:
         rows = db.execute(text(f"SELECT {key} AS g, {value} AS v {sql} GROUP BY 1 ORDER BY v DESC"), params).all()
+        groups: dict = {}
+        for r in rows:  # Klassen in Worten; gleiche Bezeichnung zusammenfassen
+            g = CHILLER_CLASS_LABEL.get(r.g, r.g) if group_by == "chiller_class" else r.g
+            groups[g] = groups.get(g, 0) + r.v
         return frame("aggregate", [field(group_by, "nominal", "Bezirk" if group_by == "district" else "Klasse"), metric],
-                     [{group_by: r.g, "chiller_count": r.v} for r in rows], ["chillers", "districts"], query=query,
-                     notes=notes)
+                     [{group_by: g, "chiller_count": v} for g, v in sorted(groups.items(), key=lambda x: -x[1])],
+                     ["chillers", "districts"], query=query, notes=notes)
     v = db.execute(text(f"SELECT {value} AS v {sql}"), params).one().v
     return frame("aggregate", [metric], [{"chiller_count": v}], ["chillers"], total=1, query=query, notes=notes)
 

@@ -225,6 +225,11 @@ EXACT = {
     "Objekterkennung in Luftbildern (KIT); Kälteleistung je Anlage über Regression und Monte-Carlo-Simulation (Barth et al. 2023)":
         "Object detection in aerial images (KIT); cooling capacity per unit via regression and Monte Carlo simulation (Barth et al. 2023)",
     "Aus Luftbildern erkannt.": "Detected from aerial images.",
+    "luftgekühlt": "air-cooled",
+    "luftgekühlt (klein)": "air-cooled (small)",
+    "Hybridkühler (vermutet)": "hybrid (assumed)",
+    "Kühlturm": "cooling tower",
+    "Kühlturm (unsicher erkannt)": "cooling tower (uncertain)",
     "0 kW heißt: im Luftbild wurde kein Lüfter erkannt, daher keine Leistungsschätzung – nicht, dass die Anlage keine Leistung hat.":
         "0 kW means no fan was detected in the aerial image, so there is no capacity estimate – not that the unit has no capacity.",
     "Kälteleistung je Anlage: Schätzung des KIT aus dem Luftbild (Mittelwert einer "
@@ -420,7 +425,7 @@ def tr(s):
 
 
 # row fields that hold German category values (not names, numbers or ids)
-_VALUE_FIELDS = {"usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat", "plot_owner", "climate", "scenario"}
+_VALUE_FIELDS = {"class", "chiller_class", "usage_type", "usage_zone_type", "construction_period", "month_label", "process_heat", "plot_owner", "climate", "scenario"}
 
 
 def localize(fr: dict | None, lang: str | None) -> dict | None:

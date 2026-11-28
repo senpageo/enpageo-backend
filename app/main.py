@@ -793,7 +793,7 @@ def list_chillers(
         text(
             """
             SELECT
-                c.objectid, c.class AS class_name, c.confidence, c.shape_area, c.capacity_kw, c.capacity_sd_kw,
+                c.objectid, c.class AS class_name, c.confidence, c.shape_area, c.capacity_kw, c.capacity_sd_kw, c.fans,
                 r.placement,
                 -- outline with roof height per vertex (tools/kaelte/anlagen_3d.py), flat outline where it is missing
                 ST_AsGeoJSON(COALESCE(r.geom, ST_Force3D(ST_Transform(c.geom, 4326))), 7) AS geom
@@ -826,6 +826,7 @@ def list_chillers(
                     "placement": row.placement,
                     "capacity_kw": row.capacity_kw,
                     "capacity_sd_kw": row.capacity_sd_kw,
+                    "fans": row.fans,
                 },
             }
             for row in rows

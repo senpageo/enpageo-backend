@@ -211,6 +211,14 @@ COOLING_ACTUAL_NOTE = (
 CHILLER_CAPACITY_NOTE = ("Kälteleistung je Anlage: Schätzung des KIT aus dem Luftbild (Mittelwert einer "
                          "Monte-Carlo-Simulation, Standardabweichung als Unsicherheit), keine gemessenen Werte.")
 
+# Klassen der Luftbilderkennung in Worten. ACC_1_Fan/ACC_2_Fans beschreiben das Aussehen; die Lüfterzahl im
+# Namen passt oft nicht zu den gezählten Lüftern (Spalte fans), deshalb ohne Zahl.
+CHILLER_CLASS_LABEL = {
+    "ACC_Large": "luftgekühlt", "ACC_1_Fan": "luftgekühlt (klein)", "ACC_2_Fans": "luftgekühlt (klein)",
+    "Hybrid_supposed": "Hybridkühler (vermutet)", "CT_Base_induced": "Kühlturm", "CT_Fan_induced": "Kühlturm",
+    "CT_forced": "Kühlturm", "CT_forced_difficult": "Kühlturm (unsicher erkannt)",
+}
+
 DC_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.data_center_building))"
 PV_IN = "b.uuid = ANY(ARRAY(SELECT uuid FROM core_bldg.pv_installed_building))"
 
@@ -546,7 +554,7 @@ FIND_CHILLERS_SCHEMA = {
             "enum": CHILLER_CLASSES,
             "description": (
                 "Exact class from the aerial-imagery detection: 'ACC_Large' (large air-cooled "
-                "condenser), 'ACC_1_Fan'/'ACC_2_Fans' (small air-cooled units with one or two fans), 'CT_Base_induced'/'CT_Fan_induced'/'CT_forced'/'CT_forced_difficult' "
+                "condenser), 'ACC_1_Fan'/'ACC_2_Fans' (small air-cooled units; the fan number in these class names is only the look and often wrong - for a fan count use the fans filter and never call a unit '1 Lüfter' because of its class), 'CT_Base_induced'/'CT_Fan_induced'/'CT_forced'/'CT_forced_difficult' "
                 "(cooling tower variants), 'Hybrid_supposed' (suspected hybrid unit). Omit to search "
                 "all classes."
             ),
@@ -1249,7 +1257,8 @@ def _execute_find_chillers(
             field("capacity_sd_kw", "quantitative", "Kälteleistung – Standardabweichung", "kW"),
             field("shape_area", "quantitative", "Grundfläche", "m²"),
         ],
-        [{k: (round(float(v), 1) if k in ("capacity_kw", "capacity_sd_kw", "shape_area") and v is not None else v)
+        [{k: (round(float(v), 1) if k in ("capacity_kw", "capacity_sd_kw", "shape_area") and v is not None
+              else CHILLER_CLASS_LABEL.get(v, v) if k == "class" else v)
           for k, v in f["properties"].items() if k != "placement"} for f in features],
         ["chillers"] + (["districts"] if districts else []),
         ids=[str(f["properties"]["objectid"]) for f in features],
