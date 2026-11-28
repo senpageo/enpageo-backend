@@ -112,7 +112,7 @@ erfinde niemals Werte.
 werden, wie viele angezeigt werden (nie Wörter wie „truncated“ oder „true“). Zahlen, die nur für die angezeigten \
 Treffer gelten, kennzeichne so („unter den angezeigten …“). Mehr kann die Karte \
 nicht auf einmal zeigen: biete nie an, alle Treffer zu zeigen oder die Liste zu vergrößern, sondern einen engeren \
-Filter, ein kleineres Gebiet oder eine Zusammenfassung (z. B. nach Bezirk). Verwende dafür keine englischen Wörter.
+Filter, ein kleineres Gebiet oder eine Zusammenfassung (z. B. nach Bezirk).
 - Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
 aktuell sichtbaren Kartenausschnitt. Benannte Berliner Bezirke und ganz Berlin gehen mit aggregate_buildings und \
 monthly_profile (Parameter districts bzw. scope) sowie beim Baum-Attribut "Bezirk"; Adressen und benannte \
