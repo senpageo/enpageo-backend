@@ -555,6 +555,25 @@ FIND_CHILLERS_SCHEMA = {
             "type": "number",
             "description": "Minimum estimated cooling capacity of a unit in kW (KIT list, Monte Carlo mean)",
         },
+        "max_capacity_kw": {
+            "type": "number",
+            "description": "Maximum estimated cooling capacity of a unit in kW",
+        },
+        "capacity_kw": {
+            "type": "number",
+            "description": (
+                "Exactly this estimated cooling capacity in kW (rounded to whole kW). Use 0 for units "
+                "without an estimate (no fan detected, e.g. 'Anlagen mit 0 kW')."
+            ),
+        },
+        "fans": {"type": "integer", "description": "Exactly this number of detected fans (0 = no fan detected)"},
+        "min_fans": {"type": "integer", "description": "Minimum number of detected fans"},
+        "max_fans": {"type": "integer", "description": "Maximum number of detected fans"},
+        "sort": {
+            "type": "string",
+            "enum": ["capacity_desc", "capacity_asc"],
+            "description": "Order of the results: largest capacity first (default) or smallest first",
+        },
         "districts": {"type": "array", "items": {"type": "string"}, "description": "Restrict to these Berlin districts (partial names)"},
         "scope": {"type": "string", "enum": ["view", "berlin"], "description": "'berlin': all of Berlin instead of the visible map"},
         "min_shape_area": {"type": "number", "description": "Minimum footprint area in square meters"},
@@ -1120,6 +1139,12 @@ def _execute_find_chillers(
     limit: int | None = None,
     districts: list[str] | None = None,
     scope: str | None = None,
+    max_capacity_kw: float | None = None,
+    capacity_kw: float | None = None,
+    fans: int | None = None,
+    min_fans: int | None = None,
+    max_fans: int | None = None,
+    sort: str | None = None,
 ) -> dict:
     limit = min(int(limit or DEFAULT_RESULTS), MAX_RESULTS)
 
@@ -1149,6 +1174,21 @@ def _execute_find_chillers(
     if min_capacity_kw is not None:
         conditions.append("capacity_kw >= :min_capacity_kw")
         params["min_capacity_kw"] = min_capacity_kw
+    if max_capacity_kw is not None:
+        conditions.append("capacity_kw <= :max_capacity_kw")
+        params["max_capacity_kw"] = max_capacity_kw
+    if capacity_kw is not None:  # auf ganze kW, damit 0 und z. B. 144 genau treffen
+        conditions.append("round(capacity_kw::numeric) = round(CAST(:capacity_kw AS numeric))")
+        params["capacity_kw"] = capacity_kw
+    if fans is not None:
+        conditions.append("fans = :fans")
+        params["fans"] = fans
+    if min_fans is not None:
+        conditions.append("fans >= :min_fans")
+        params["min_fans"] = min_fans
+    if max_fans is not None:
+        conditions.append("fans <= :max_fans")
+        params["max_fans"] = max_fans
     if min_shape_area is not None:
         conditions.append("shape_area >= :min_shape_area")
         params["min_shape_area"] = min_shape_area
@@ -1174,7 +1214,8 @@ def _execute_find_chillers(
                                          ST_Force3D(ST_Transform(geom, 4326))), 7) AS geom
             FROM core_bldg."Chillers"
             {where_clause}
-            ORDER BY capacity_kw DESC NULLS LAST, shape_area DESC NULLS LAST
+            ORDER BY {"capacity_kw ASC NULLS LAST" if sort == "capacity_asc" else "capacity_kw DESC NULLS LAST"},
+                     shape_area DESC NULLS LAST
             LIMIT :limit
             """
         ),
@@ -1213,8 +1254,14 @@ def _execute_find_chillers(
         ["chillers"] + (["districts"] if districts else []),
         ids=[str(f["properties"]["objectid"]) for f in features],
         total=total,
-        query={"chiller_class": chiller_class, "districts": districts, "scope": scope},
-        notes=[CHILLER_CAPACITY_NOTE],
+        query={"chiller_class": chiller_class, "districts": districts, "scope": scope,
+               "min_capacity_kw": min_capacity_kw, "max_capacity_kw": max_capacity_kw, "capacity_kw": capacity_kw,
+               "fans": fans, "min_fans": min_fans, "max_fans": max_fans, "sort": sort},
+        notes=[CHILLER_CAPACITY_NOTE]
+        + (["0 kW heißt: im Luftbild wurde kein Lüfter erkannt, daher keine Leistungsschätzung – "
+            "nicht, dass die Anlage keine Leistung hat."]
+           if (capacity_kw is not None and round(capacity_kw) == 0)
+           or (max_capacity_kw is not None and max_capacity_kw < 1) else []),
     )
 
     return {

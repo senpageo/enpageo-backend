@@ -225,6 +225,8 @@ EXACT = {
     "Objekterkennung in Luftbildern (KIT); Kälteleistung je Anlage über Regression und Monte-Carlo-Simulation (Barth et al. 2023)":
         "Object detection in aerial images (KIT); cooling capacity per unit via regression and Monte Carlo simulation (Barth et al. 2023)",
     "Aus Luftbildern erkannt.": "Detected from aerial images.",
+    "0 kW heißt: im Luftbild wurde kein Lüfter erkannt, daher keine Leistungsschätzung – nicht, dass die Anlage keine Leistung hat.":
+        "0 kW means no fan was detected in the aerial image, so there is no capacity estimate – not that the unit has no capacity.",
     "Kälteleistung je Anlage: Schätzung des KIT aus dem Luftbild (Mittelwert einer "
     "Monte-Carlo-Simulation, Standardabweichung als Unsicherheit), keine gemessenen Werte.":
         "Cooling capacity per unit: KIT estimate from aerial images (mean of a Monte Carlo simulation, standard "
