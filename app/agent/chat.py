@@ -108,7 +108,9 @@ Nenne keine Verteilungen, Bezirke oder Werte, die nicht im Tool-Ergebnis stehen.
 - Rufe das Werkzeug mit genau dem Filter auf, den die Frage nennt („mit 0 kW“ = genau 0 kW, nicht „mindestens 0 kW“).
 - Nenne in deiner Antwort immer die echten Zahlen aus dem Tool-Ergebnis (Anzahl, Durchschnittswerte) — \
 erfinde niemals Werte.
-- Steht im Tool-Ergebnis „anzeige“, übernimm diesen Satz sinngemäß (nie Wörter wie „truncated“ oder „true“). Mehr kann die Karte \
+- Steht im Tool-Ergebnis „anzeige“, nenne die Gesamtzahl der Treffer daraus und, falls nicht alle angezeigt \
+werden, wie viele angezeigt werden (nie Wörter wie „truncated“ oder „true“). Zahlen, die nur für die angezeigten \
+Treffer gelten, kennzeichne so („unter den angezeigten …“). Mehr kann die Karte \
 nicht auf einmal zeigen: biete nie an, alle Treffer zu zeigen oder die Liste zu vergrößern, sondern einen engeren \
 Filter, ein kleineres Gebiet oder eine Zusammenfassung (z. B. nach Bezirk). Verwende dafür keine englischen Wörter.
 - Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
@@ -146,12 +148,28 @@ Karte und in der Tabelle). Biete stattdessen einen neuen Schritt an, etwa einen 
 oder eine Zusammenfassung.
 - Jede Antwort endet mit einer Anschlussfrage im Antworttext (Pflicht, auch bei kurzen Antworten). Sie sagt zuerst, was gerechnet wurde, und bietet dann den naheliegenden nächsten Schritt an, z. B. „Das ist für 2030 gerechnet. Willst du das auch für 2045 wissen?“ oder „Das sind alle Gebäude in Spandau. Soll ich nach Nutzung aufteilen?“. Achte auf die Richtung: ein späteres Jahr oder stärkerer Klimawandel erhöht den Kältebedarf, Maßnahmen und ein höherer Sollwert senken ihn.
 - Schreibe danach in eine eigene letzte Zeile „VORSCHLAG: “ und die Antwort, die die Nutzerin auf deine Anschlussfrage am wahrscheinlichsten gibt, als ganzen kurzen Satz in ihren Worten (z. B. „Ja, zeig mir das für 2045.“). Keine Stichworte wie „Spandau, stark“. Diese Zeile wird nicht angezeigt, sondern grau ins Eingabefeld geschrieben.
+- Schreibe direkt vor die VORSCHLAG-Zeile eine eigene Zeile „TITEL: “ mit einer Überschrift für das Ergebnis aus \
+2 bis 6 Wörtern in der Sprache der Antwort, ohne Anzahl und ohne Satzzeichen am Ende, z. B. „Kälteanlagen ohne \
+Leistungsschätzung in Berlin“ oder „Kältebedarf der Schulen in Spandau 2045“. Auch diese Zeile wird nicht angezeigt.
 - Zum Schluss prüfen: Steht in deinem Text ein Name mit Unterstrich, ein Werkzeugname, ein Feld- oder Klassencode \
 oder ein Ausdruck mit „=“? Dann formuliere ihn in Alltagssprache um. Die Nutzerin kennt diese Namen nicht.
 """
 
 # the suggestion line the model ends its answer with (see the last rule of the prompt)
 _SUGGESTION = re.compile(r"\n?\s*(?:\*\*)?(?:VORSCHLAG|SUGGESTION)(?:\*\*)?\s*:\s*(.+?)\s*$", re.S | re.I)
+
+
+# the title line the model writes before the suggestion (heading of the answer window, CSV file name)
+_TITLE = re.compile(r"^\s*(?:\*\*)?(?:TITEL|TITLE)(?:\*\*)?\s*:\s*(.+?)\s*$", re.M | re.I)
+
+
+def _split_title(reply: str) -> tuple[str, str | None]:
+    m = _TITLE.search(reply or "")
+    if not m:
+        return reply, None
+    title = m.group(1).strip().strip('"„“”*').rstrip(".:;!?").strip()
+    rest = (reply[: m.start()] + reply[m.end():]).strip()
+    return rest, (title[:80] or None)
 
 
 def _split_suggestion(reply: str) -> tuple[str, str | None]:
@@ -192,10 +210,16 @@ def _for_llm(result: dict, lang: str = "de") -> dict:
     MAX_ROWS_FOR_LLM rows (enough to describe it, without flooding the context)."""
     if "summary_for_llm" in result:
         s = dict(result["summary_for_llm"])
-        if s.get("truncated"):  # fertiger Satz, damit das Modell nicht "truncated" o. ae. zitiert
-            s["anzeige"] = (f"Angezeigt werden {s.get('returned')} von {s.get('total_matches')} Treffern."
-                            if not (lang or "de").lower().startswith("en") else
-                            f"{s.get('returned')} of {s.get('total_matches')} results are shown.")
+        # fertige Saetze, damit das Modell die Gesamtzahl nennt und nicht "truncated" o. ae. zitiert
+        total, shown = s.get("total_matches"), s.get("returned")
+        en = (lang or "de").lower().startswith("en")
+        if s.pop("truncated", None):
+            s["anzeige"] = (f"{total} results found (give this number). {shown} of them are shown on the map and in the "
+                            f"table; counts, sums and means in this result refer only to these {shown}." if en else
+                            f"Gefunden: {total} Treffer (diese Zahl nennen). Auf der Karte und in der Tabelle stehen "
+                            f"{shown} davon; Anzahlen, Summen und Mittelwerte in diesem Ergebnis gelten nur für diese {shown}.")
+        elif total is not None:
+            s["anzeige"] = f"{total} results found, all shown." if en else f"Gefunden: {total} Treffer, alle angezeigt."
         if s.get("notes"):
             s["notes"] = [tr(n) for n in s["notes"]] if not (lang or "de").lower().startswith("de") else s["notes"]
         return s
@@ -209,7 +233,9 @@ def _for_llm(result: dict, lang: str = "de") -> dict:
             "fields": [f["name"] for f in result["fields"]],
             "rows": result["rows"][:MAX_ROWS_FOR_LLM],
             "total_rows": result["total"],
-            "truncated": result["total"] > MAX_ROWS_FOR_LLM,
+            **({"zeilen": f"Du siehst nur die ersten {MAX_ROWS_FOR_LLM} von {result['total']} Zeilen; die Anwendung "
+                          f"zeigt alle {result['total']}. Nenne {result['total']} als Anzahl."}
+               if result["total"] > MAX_ROWS_FOR_LLM else {}),
             "notes": result["notes"],
         }
     return result
@@ -439,6 +465,11 @@ def run_chat(db: Session, message: str, bbox: str, polygon: dict | None = None, 
     else:
         used = model or OLLAMA_MODEL
         res = _run_chat_ollama(db, message, bbox, polygon, history, lang, chooser, used)
-    res["reply"], res["suggestion"] = _split_suggestion(res.get("reply") or "")
+    res["reply"], title = _split_title(res.get("reply") or "")
+    res["reply"], res["suggestion"] = _split_suggestion(res["reply"])
+    view, fr = res.get("view"), res.get("frame") or {}
+    if title and isinstance(view, dict) and view.get("type") != "text":
+        total = fr.get("total")
+        res["view"] = {**view, "title": f"{title} ({total})" if fr.get("kind") == "features" and total else title}
     res["meta"] = {"provider": provider, "model": used, "chooser": chooser, "seconds": round(time.time() - t0, 2)}
     return res
