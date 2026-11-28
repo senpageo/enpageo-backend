@@ -745,7 +745,7 @@ def _execute_find_buildings(
         conditions.append(HAS_CHILLER_EXPR if has_chiller else f"NOT {HAS_CHILLER_EXPR}")
         sources.append("chillers")
         if has_chiller is False:
-            notes.append("„Keine Kühlanlage“ heißt: im Luftbild nichts erkannt. Innenliegende Anlagen sieht die Erkennung nicht.")
+            notes.append("„Keine Kälteanlage“ heißt: im Luftbild nichts erkannt. Innenliegende Anlagen sieht die Erkennung nicht.")
     if min_pet_14h is not None:
         conditions.append("bcl.pet14h >= :min_pet_14h")
         params["min_pet_14h"] = min_pet_14h

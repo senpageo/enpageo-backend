@@ -625,7 +625,7 @@ TOOLS = [
         "name": "aggregate_chillers",
         "description": (
             "Count rooftop cooling equipment detected from aerial imagery, or the buildings carrying it, optionally "
-            "per district or class. Use for 'wie viele Kühltürme / Gebäude mit Kühlanlage'. To show them on the map "
+            "per district or class. Use for 'wie viele Kühltürme / Gebäude mit Kälteanlage'. To show them on the map "
             "use find_chillers. Capacity per unit is not available."
         ),
         "input_schema": AGGREGATE_CHILLERS_SCHEMA,
@@ -1759,7 +1759,7 @@ def aggregate_chillers(db: Session, bbox: str | None, polygon: dict | None = Non
     key = {"district": "d.name", "chiller_class": "c.class"}.get(group_by or "")
     where_sql = "WHERE " + " AND ".join(where) if where else ""
     sql = f'FROM core_bldg."Chillers" c {join} {where_sql}'
-    metric = field("chiller_count", "quantitative", "Gebäude mit Kühlanlage" if by_building else "Erkannte Kühlanlagen",
+    metric = field("chiller_count", "quantitative", "Gebäude mit Kälteanlage" if by_building else "Erkannte Kälteanlagen",
                    "Gebäude" if by_building else "Anlagen")
     query = {"chiller_group": chiller_group, "count": count, "group_by": group_by, "districts": districts, "scope": scope}
     notes = ["Aus Luftbildern erkannt.", CHILLER_CAPACITY_NOTE]
