@@ -344,6 +344,10 @@ PATTERNS = [
                f"or building is in the way; {m.group(3)} trees are already there). They cool the ambient air by "
                f"{m.group(4)} °C. They shade the facades of {m.group(5)} buildings and lower their cooling demand by "
                f"about {m.group(6).replace(',', '.')} MWh/a ({m.group(7)} %, range {m.group(8)} to {m.group(9)} %)."),
+    (re.compile(r"^Davon (\d+) Anlagen mit 0 kW \(kein Lüfter erkannt, keine Leistungsschätzung\)\. Die kleinste "
+                r"geschätzte Leistung liegt bei (\d+) kW\.$"),
+     lambda m: f"Of these, {m.group(1)} units with 0 kW (no fan detected, no capacity estimate). The smallest "
+               f"estimated capacity is {m.group(2)} kW."),
     (re.compile(r"^Anteil an (.+) gesamt$"), lambda m: f"Share of total {tr(m.group(1)).lower()}"),
     (re.compile(r"^Rasterzellen (\d+) m × (\d+) m, gezeigt werden die dichtesten (\d+)\. Kältewerte sind generische "
                 r"Platzhalter, keine Simulation\.$"),

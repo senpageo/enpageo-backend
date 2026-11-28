@@ -1230,6 +1230,16 @@ def _execute_find_chillers(
         params,
     ).all()
 
+    # Eine Obergrenze ohne Untergrenze > 0 schliesst die Anlagen ohne Schaetzung (0 kW) ein: Anzahl nennen.
+    zero_kw = 0
+    if max_capacity_kw is not None and max_capacity_kw >= 1 and not (min_capacity_kw and min_capacity_kw > 0) \
+            and capacity_kw is None:
+        zero_kw = db.execute(text(f'SELECT count(*) AS n FROM core_bldg."Chillers" {where_clause} '
+                                  f'{"AND" if where_clause else "WHERE"} round(capacity_kw::numeric) = 0'),
+                             params).one().n
+        min_kw = db.execute(text('SELECT round(min(capacity_kw)) AS v FROM core_bldg."Chillers" WHERE capacity_kw >= 1')
+                            ).one().v
+
     features = [
         {
             "type": "Feature",
@@ -1270,7 +1280,9 @@ def _execute_find_chillers(
         + (["0 kW heißt: im Luftbild wurde kein Lüfter erkannt, daher keine Leistungsschätzung – "
             "nicht, dass die Anlage keine Leistung hat."]
            if (capacity_kw is not None and round(capacity_kw) == 0)
-           or (max_capacity_kw is not None and max_capacity_kw < 1) else []),
+           or (max_capacity_kw is not None and max_capacity_kw < 1) else [])
+        + ([f"Davon {zero_kw} Anlagen mit 0 kW (kein Lüfter erkannt, keine Leistungsschätzung). Die kleinste "
+            f"geschätzte Leistung liegt bei {min_kw:.0f} kW."] if zero_kw else []),
     )
 
     return {

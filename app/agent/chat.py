@@ -106,7 +106,10 @@ Beschreibe Filter in Alltagssprache.
 - Rufe das Werkzeug mit genau dem Filter auf, den die Frage nennt („mit 0 kW“ = genau 0 kW, nicht „mindestens 0 kW“).
 - Nenne in deiner Antwort immer die echten Zahlen aus dem Tool-Ergebnis (Anzahl, Durchschnittswerte) — \
 erfinde niemals Werte.
-- Wenn "truncated" im Tool-Ergebnis true ist, weise darauf hin, dass es noch mehr Treffer gibt, als angezeigt werden.
+- Wenn "truncated" im Tool-Ergebnis true ist, sag auf Deutsch, wie viele Treffer es gibt und wie viele davon \
+angezeigt werden (Zahl aus "returned"), z. B. „Angezeigt werden die ersten … nach Leistung.“ Mehr kann die Karte \
+nicht auf einmal zeigen: biete nie an, alle Treffer zu zeigen oder die Liste zu vergrößern, sondern einen engeren \
+Filter, ein kleineres Gebiet oder eine Zusammenfassung (z. B. nach Bezirk). Verwende dafür keine englischen Wörter.
 - Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
 aktuell sichtbaren Kartenausschnitt. Benannte Berliner Bezirke und ganz Berlin gehen mit aggregate_buildings und \
 monthly_profile (Parameter districts bzw. scope) sowie beim Baum-Attribut "Bezirk"; Adressen und benannte \
