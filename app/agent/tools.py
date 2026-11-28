@@ -986,7 +986,7 @@ def _execute_find_buildings(
             "returned": len(features),
             "truncated": total > len(features),
             "cooling_scenario": cooling.label(sc),
-            "heat_filter": (f"min_pet_14h = {min_pet_14h} °C" if min_pet_14h is not None else
+            "heat_filter": (f"Wärmebelastung um 14 Uhr (PET) mindestens {min_pet_14h} °C" if min_pet_14h is not None else
                             "KEIN Hitze-Filter: die Treffer sind nicht nach Wärmebelastung ausgewählt"),
             "pet_14h_of_returned": {
                 "mean": round(sum(p) / len(p), 1) if (p := [f["properties"]["pet_14h"] for f in features if f["properties"]["pet_14h"] is not None]) else None,
@@ -1294,6 +1294,7 @@ def _execute_find_chillers(
             "returned": len(features),
             "truncated": total > len(features),
             "search_area_m2": _buffered_search_area_m2(db, polygon, buffer_distance_m) if polygon else None,
+            "notes": chiller_frame["notes"],
         },
     }
 

@@ -8,7 +8,7 @@ import anthropic
 from sqlalchemy.orm import Session
 
 from . import analysis
-from .i18n import localize, localize_view
+from .i18n import localize, localize_view, tr
 from .presentation import choose
 from .tools import TOOLS, execute_tool, to_openai_tools
 
@@ -103,11 +103,12 @@ Regeln:
 - Antworte auf Deutsch, knapp und konkret.
 - Nenne in der Antwort nie Werkzeug-, Parameter-, Spalten- oder Tabellennamen, keine Codes und kein SQL. \
 Beschreibe Filter in Alltagssprache.
+- Steht im Tool-Ergebnis ein Hinweis (notes), der die Zahlen einordnet (z. B. Anlagen mit 0 kW), nenne ihn. \
+Nenne keine Verteilungen, Bezirke oder Werte, die nicht im Tool-Ergebnis stehen.
 - Rufe das Werkzeug mit genau dem Filter auf, den die Frage nennt („mit 0 kW“ = genau 0 kW, nicht „mindestens 0 kW“).
 - Nenne in deiner Antwort immer die echten Zahlen aus dem Tool-Ergebnis (Anzahl, Durchschnittswerte) — \
 erfinde niemals Werte.
-- Wenn "truncated" im Tool-Ergebnis true ist, sag auf Deutsch, wie viele Treffer es gibt und wie viele davon \
-angezeigt werden (Zahl aus "returned"), z. B. „Angezeigt werden die ersten … nach Leistung.“ Mehr kann die Karte \
+- Steht im Tool-Ergebnis „anzeige“, übernimm diesen Satz sinngemäß (nie Wörter wie „truncated“ oder „true“). Mehr kann die Karte \
 nicht auf einmal zeigen: biete nie an, alle Treffer zu zeigen oder die Liste zu vergrößern, sondern einen engeren \
 Filter, ein kleineres Gebiet oder eine Zusammenfassung (z. B. nach Bezirk). Verwende dafür keine englischen Wörter.
 - Die Tools durchsuchen eine von der Nutzerin gezeichnete Fläche/Punkt/Linie (falls vorhanden), sonst den \
@@ -190,7 +191,14 @@ def _for_llm(result: dict, lang: str = "de") -> dict:
     """What the model sees of a tool result: the compact summary of find_* tools, or a result frame cut to
     MAX_ROWS_FOR_LLM rows (enough to describe it, without flooding the context)."""
     if "summary_for_llm" in result:
-        return result["summary_for_llm"]
+        s = dict(result["summary_for_llm"])
+        if s.get("truncated"):  # fertiger Satz, damit das Modell nicht "truncated" o. ae. zitiert
+            s["anzeige"] = (f"Angezeigt werden {s.get('returned')} von {s.get('total_matches')} Treffern."
+                            if not (lang or "de").lower().startswith("en") else
+                            f"{s.get('returned')} of {s.get('total_matches')} results are shown.")
+        if s.get("notes"):
+            s["notes"] = [tr(n) for n in s["notes"]] if not (lang or "de").lower().startswith("de") else s["notes"]
+        return s
     if "kind" not in result and isinstance(result.get("frame"), dict):  # frame + map layer, no own summary
         result = result["frame"]
     if "kind" in result:
